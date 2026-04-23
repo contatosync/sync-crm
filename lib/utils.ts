@@ -59,6 +59,10 @@ export function getInitials(name: string | null): string {
   return name.split(' ').slice(0,2).map(n => n[0]).join('').toUpperCase()
 }
 
+export function isGroupPhone(phone: string): boolean {
+  return phone.replace(/\D/g, '').startsWith('120363')
+}
+
 const AVATAR_COLORS = [
   '#2563EB', '#16A34A', '#DC2626', '#9333EA', '#EA580C',
   '#0891B2', '#BE185D', '#65A30D', '#7C3AED', '#B45309',

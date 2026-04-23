@@ -3,6 +3,7 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { sendTextMessage } from '@/lib/evolution'
 import { formatDate, formatDateTime, formatPhone } from '@/lib/utils'
+import { useUnread } from '@/lib/unread-context'
 import ContactAvatar from '@/components/ContactAvatar'
 import { Search, Send, X, Phone, Tag, FileText } from 'lucide-react'
 import type { Conversa, Contato, EtapaFunil } from '@/types'
@@ -20,6 +21,7 @@ export default function InboxPage() {
   const [editandoObs, setEditandoObs] = useState(false)
   const [obs, setObs] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const { markAsRead } = useUnread()
 
   // Buscar dados iniciais
   useEffect(() => {
@@ -59,13 +61,18 @@ export default function InboxPage() {
     setContatoSelecionado(contato)
     setObs(contato?.observacoes ?? '')
     setEditandoObs(false)
+    markAsRead(conv.telefone)
   }
 
-  // Update selected conversation when data reloads
+  // Atualiza conversa selecionada quando dados recarregam
   useEffect(() => {
     if (selecionada) {
       const updated = conversas.find(c => c.telefone === selecionada.telefone)
-      if (updated) setSelecionada(updated)
+      if (updated) {
+        setSelecionada(updated)
+        // Se a conversa selecionada recebeu nova mensagem, marca como lida imediatamente
+        markAsRead(selecionada.telefone)
+      }
       const contato = contatos[selecionada.telefone] ?? null
       setContatoSelecionado(contato)
     }
