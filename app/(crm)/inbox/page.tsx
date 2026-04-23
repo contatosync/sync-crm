@@ -1,12 +1,14 @@
 'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { sendTextMessage } from '@/lib/evolution'
+import { sendTextMessage, sendAudioMessage } from '@/lib/evolution'
 import { formatDate, formatDateTime, formatPhone } from '@/lib/utils'
 import { useUnread } from '@/lib/unread-context'
 import ContactAvatar from '@/components/ContactAvatar'
+import AudioPlayer from '@/components/AudioPlayer'
+import AudioRecorder from '@/components/AudioRecorder'
 import { Search, Send, X, Phone, Tag, FileText } from 'lucide-react'
-import type { Conversa, Contato, EtapaFunil } from '@/types'
+import type { Conversa, Contato, EtapaFunil, Mensagem } from '@/types'
 
 export default function InboxPage() {
   const [conversas, setConversas] = useState<Conversa[]>([])
@@ -20,8 +22,21 @@ export default function InboxPage() {
   const [filtro, setFiltro] = useState<string>('todas')
   const [editandoObs, setEditandoObs] = useState(false)
   const [obs, setObs] = useState('')
+  const [isRecording, setIsRecording] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { markAsRead } = useUnread()
+
+  // ── Helpers de áudio ──────────────────────────────────────────────────────
+  function isAudioMsg(msg: Mensagem) {
+    return msg.media_type === 'audio' || msg.media_type === 'ptt' ||
+      msg.content.startsWith('[audio]') || msg.content.startsWith('[ptt]')
+  }
+
+  function getAudioMsgId(msg: Mensagem): string | undefined {
+    if (msg.message_id) return msg.message_id
+    const m = msg.content.match(/^\[(?:audio|ptt):([^\]]+)\]/)
+    return m?.[1]
+  }
 
   // Buscar dados iniciais
   useEffect(() => {
@@ -98,6 +113,24 @@ export default function InboxPage() {
     } finally {
       setEnviando(false)
     }
+  }
+
+  async function handleSendAudio(base64: string) {
+    if (!selecionada) return
+    await sendAudioMessage(selecionada.telefone, base64)
+    const novaMensagem: Mensagem = {
+      role: 'assistant',
+      content: '[ptt]',
+      media_type: 'ptt',
+      timestamp: new Date().toISOString(),
+    }
+    const novoHistorico = [...(selecionada.historico ?? []), novaMensagem]
+    await supabase.from('conversas').upsert({
+      telefone: selecionada.telefone,
+      historico: novoHistorico,
+      atualizado_em: new Date().toISOString(),
+    }, { onConflict: 'telefone' })
+    await loadData()
   }
 
   async function salvarObs() {
@@ -196,7 +229,7 @@ export default function InboxPage() {
                   </p>
                   <p className="text-xs text-gray-500 truncate mt-0.5">
                     {ultima
-                      ? (ultima.role === 'assistant' ? '✓ ' : '') + ultima.content
+                      ? (ultima.role === 'assistant' ? '✓ ' : '') + (isAudioMsg(ultima) ? '🎵 Áudio' : ultima.content)
                       : <span className="italic">Sem mensagens</span>}
                   </p>
                 </div>
@@ -223,39 +256,60 @@ export default function InboxPage() {
 
           {/* Mensagens */}
           <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
-            {(selecionada.historico ?? []).map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === 'assistant' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-xs lg:max-w-md xl:max-w-lg rounded-2xl px-4 py-2.5 ${
-                  msg.role === 'assistant'
-                    ? 'bg-whatsapp text-white rounded-tr-sm'
-                    : 'bg-white text-gray-900 rounded-tl-sm shadow-sm'
-                }`}>
-                  <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                  <p className={`text-xs mt-1 ${msg.role === 'assistant' ? 'text-green-100' : 'text-gray-400'}`}>
-                    {formatDateTime(msg.timestamp)}
-                  </p>
+            {(selecionada.historico ?? []).map((msg, i) => {
+              const audio = isAudioMsg(msg)
+              const msgId = getAudioMsgId(msg)
+              return (
+                <div key={i} className={`flex ${msg.role === 'assistant' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`rounded-2xl px-4 py-2.5 ${
+                    msg.role === 'assistant'
+                      ? 'bg-whatsapp text-white rounded-tr-sm'
+                      : 'bg-white text-gray-900 rounded-tl-sm shadow-sm'
+                  } ${audio ? '' : 'max-w-xs lg:max-w-md xl:max-w-lg'}`}>
+                    {audio ? (
+                      <AudioPlayer
+                        messageId={msgId}
+                        isOwn={msg.role === 'assistant'}
+                        darkBg={msg.role === 'assistant'}
+                      />
+                    ) : (
+                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                    )}
+                    <p className={`text-xs mt-1 ${msg.role === 'assistant' ? 'text-green-100' : 'text-gray-400'}`}>
+                      {formatDateTime(msg.timestamp)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
             <div ref={messagesEndRef} />
           </div>
 
           {/* Input */}
-          <form onSubmit={handleEnviar} className="bg-white border-t border-gray-100 p-3 flex gap-2 flex-shrink-0">
-            <input
-              value={mensagem}
-              onChange={e => setMensagem(e.target.value)}
-              placeholder="Digite uma mensagem..."
-              className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
+          <form onSubmit={handleEnviar} className="bg-white border-t border-gray-100 p-3 flex gap-2 items-center flex-shrink-0">
+            {!isRecording && (
+              <input
+                value={mensagem}
+                onChange={e => setMensagem(e.target.value)}
+                placeholder="Digite uma mensagem..."
+                className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
+              />
+            )}
+            <AudioRecorder
+              onSend={handleSendAudio}
+              onRecordingChange={setIsRecording}
+              disabled={enviando}
             />
-            <button
-              type="submit"
-              disabled={!mensagem.trim() || enviando}
-              className="bg-accent text-white rounded-xl px-4 py-2.5 hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
-            >
-              <Send size={16} />
-              <span className="text-sm font-medium hidden sm:block">Enviar</span>
-            </button>
+            {!isRecording && (
+              <button
+                type="submit"
+                disabled={!mensagem.trim() || enviando}
+                className="bg-accent text-white rounded-xl px-4 py-2.5 hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+              >
+                <Send size={16} />
+                <span className="text-sm font-medium hidden sm:block">Enviar</span>
+              </button>
+            )}
           </form>
         </div>
       ) : (

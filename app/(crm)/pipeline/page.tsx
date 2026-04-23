@@ -8,8 +8,10 @@ import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { supabase } from '@/lib/supabase'
-import { sendTextMessage } from '@/lib/evolution'
+import { sendTextMessage, sendAudioMessage } from '@/lib/evolution'
 import ContactAvatar from '@/components/ContactAvatar'
+import AudioPlayer from '@/components/AudioPlayer'
+import AudioRecorder from '@/components/AudioRecorder'
 import { formatPhone, formatDate, isGroupPhone } from '@/lib/utils'
 import { MessageSquare, Users, X, Send, CheckSquare, Square, Plus } from 'lucide-react'
 import type { Contato, EtapaFunil, Conversa, Mensagem, Tarefa } from '@/types'
@@ -109,7 +111,19 @@ function ContactPanel({ contato, onClose, onUpdate }: {
   const [carregando, setCarregando] = useState(false)
   const [msgTexto, setMsgTexto] = useState('')
   const [enviando, setEnviando] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  function isAudioMsg(msg: Mensagem) {
+    return msg.media_type === 'audio' || msg.media_type === 'ptt' ||
+      msg.content.startsWith('[audio]') || msg.content.startsWith('[ptt]')
+  }
+
+  function getAudioMsgId(msg: Mensagem): string | undefined {
+    if (msg.message_id) return msg.message_id
+    const m = msg.content.match(/^\[(?:audio|ptt):([^\]]+)\]/)
+    return m?.[1]
+  }
 
   // Detalhes
   const [editNome, setEditNome]     = useState(contato.nome ?? '')
@@ -211,6 +225,21 @@ function ContactPanel({ contato, onClose, onUpdate }: {
     setSalvoOk(true)
     setTimeout(() => setSalvoOk(false), 2000)
     onUpdate(patch)
+  }
+
+  async function handleSendAudio(base64: string) {
+    await sendAudioMessage(contato.telefone, base64)
+    const agora = new Date().toISOString()
+    const novaMensagem: Mensagem = { role: 'assistant', content: '[ptt]', media_type: 'ptt', timestamp: agora }
+    const prevHistorico = conversa?.historico ?? []
+    const novoHistorico = [...prevHistorico, novaMensagem]
+    setConversa(prev => ({
+      id: prev?.id ?? '', nome: prev?.nome ?? contato.nome, telefone: contato.telefone,
+      historico: novoHistorico, atualizado_em: agora,
+    }))
+    await supabase.from('conversas').upsert({
+      telefone: contato.telefone, historico: novoHistorico, atualizado_em: agora,
+    }, { onConflict: 'telefone' })
   }
 
   async function criarTarefa() {
@@ -326,14 +355,28 @@ function ContactPanel({ contato, onClose, onUpdate }: {
                         </div>
                       )}
                       <div className={`flex ${msg.role === 'assistant' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[82%] rounded-2xl px-3 py-2 shadow-sm ${
-                          msg.role === 'assistant'
-                            ? 'bg-[#DCF8C6] text-gray-900 rounded-tr-sm'
-                            : 'bg-white text-gray-900 rounded-tl-sm'
-                        }`}>
-                          <p className="text-sm whitespace-pre-wrap break-words leading-snug">{msg.content}</p>
-                          <p className="text-[10px] text-gray-400 mt-0.5 text-right">{msgTime(msg.timestamp)}</p>
-                        </div>
+                        {(() => {
+                          const audio = isAudioMsg(msg)
+                          const msgId = getAudioMsgId(msg)
+                          return (
+                            <div className={`rounded-2xl px-3 py-2 shadow-sm ${
+                              msg.role === 'assistant'
+                                ? 'bg-[#DCF8C6] text-gray-900 rounded-tr-sm'
+                                : 'bg-white text-gray-900 rounded-tl-sm'
+                            } ${audio ? '' : 'max-w-[82%]'}`}>
+                              {audio ? (
+                                <AudioPlayer
+                                  messageId={msgId}
+                                  isOwn={msg.role === 'assistant'}
+                                  darkBg={false}
+                                />
+                              ) : (
+                                <p className="text-sm whitespace-pre-wrap break-words leading-snug">{msg.content}</p>
+                              )}
+                              <p className="text-[10px] text-gray-400 mt-0.5 text-right">{msgTime(msg.timestamp)}</p>
+                            </div>
+                          )
+                        })()}
                       </div>
                     </React.Fragment>
                   )
@@ -342,20 +385,29 @@ function ContactPanel({ contato, onClose, onUpdate }: {
               <div ref={messagesEndRef} />
             </div>
 
-            <form onSubmit={handleEnviarMsg} className="flex-shrink-0 p-3 bg-white border-t border-gray-100 flex gap-2">
-              <input
-                value={msgTexto}
-                onChange={e => setMsgTexto(e.target.value)}
-                placeholder="Digite uma mensagem..."
-                className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
+            <form onSubmit={handleEnviarMsg} className="flex-shrink-0 p-3 bg-white border-t border-gray-100 flex gap-2 items-center">
+              {!isRecording && (
+                <input
+                  value={msgTexto}
+                  onChange={e => setMsgTexto(e.target.value)}
+                  placeholder="Digite uma mensagem..."
+                  className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
+                />
+              )}
+              <AudioRecorder
+                onSend={handleSendAudio}
+                onRecordingChange={setIsRecording}
+                disabled={enviando}
               />
-              <button
-                type="submit"
-                disabled={!msgTexto.trim() || enviando}
-                className="bg-accent text-white rounded-xl px-3 hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center"
-              >
-                <Send size={15} />
-              </button>
+              {!isRecording && (
+                <button
+                  type="submit"
+                  disabled={!msgTexto.trim() || enviando}
+                  className="bg-accent text-white rounded-xl px-3 py-2.5 hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center"
+                >
+                  <Send size={15} />
+                </button>
+              )}
             </form>
           </>
         )}

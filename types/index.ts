@@ -25,6 +25,10 @@ export interface Mensagem {
   role: 'user' | 'assistant'
   content: string
   timestamp: string
+  /** 'audio' | 'ptt' indica mensagem de áudio; outros tipos reservados para futuro */
+  media_type?: 'audio' | 'ptt' | 'image' | 'document'
+  /** ID da mensagem no WhatsApp — usado para buscar mídia via Evolution API */
+  message_id?: string
 }
 
 export interface Conversa {
