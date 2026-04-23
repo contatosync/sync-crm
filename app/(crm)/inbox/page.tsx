@@ -113,18 +113,24 @@ export default function InboxPage() {
     return h[h.length - 1] ?? null
   }
 
+  // Nomes que sabemos ser do bot/conta própria — devem ser ignorados
+  const NOMES_IGNORADOS = new Set(['sync', 'sync studios', 'bot', 'assistant'])
+
+  function nomeValido(nome: string | null, telefone: string): boolean {
+    if (!nome || nome.trim() === '') return false
+    if (nome === telefone) return false
+    if (NOMES_IGNORADOS.has(nome.trim().toLowerCase())) return false
+    return true
+  }
+
   // Resolve o nome correto na ordem de prioridade:
-  // 1. crm_contatos.nome (se existir e não for igual ao telefone)
-  // 2. conversas.nome (se não for igual ao telefone)
-  // 3. telefone formatado
+  // 1. crm_contatos.nome (se válido)
+  // 2. conversas.nome (se válido e diferente de nomes do bot)
+  // 3. Telefone formatado como fallback
   function resolverNome(conv: Conversa, contato?: Contato): string {
     const tel = conv.telefone
-    if (contato?.nome && contato.nome.trim() !== '' && contato.nome !== tel) {
-      return contato.nome
-    }
-    if (conv.nome && conv.nome.trim() !== '' && conv.nome !== tel) {
-      return conv.nome
-    }
+    if (nomeValido(contato?.nome ?? null, tel)) return contato!.nome!
+    if (nomeValido(conv.nome ?? null, tel)) return conv.nome!
     return formatPhone(tel)
   }
 
@@ -172,7 +178,7 @@ export default function InboxPage() {
                 onClick={() => selecionarConversa(conv)}
                 className={`w-full flex items-start gap-3 p-4 border-b border-gray-50 hover:bg-gray-50 transition-colors text-left ${ativa ? 'bg-blue-50 border-l-2 border-l-accent' : ''}`}
               >
-                <ContactAvatar nome={nome} fotoUrl={contato?.foto_url ?? null} size={44} />
+                <ContactAvatar nome={nome} seed={conv.telefone} size={44} />
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-baseline gap-1">
                     <p className="text-sm font-semibold text-gray-900 truncate">{nome}</p>
@@ -201,7 +207,7 @@ export default function InboxPage() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Chat header */}
           <div className="h-14 bg-white border-b border-gray-100 flex items-center px-4 gap-3 flex-shrink-0">
-            <ContactAvatar nome={resolverNome(selecionada, contatoSelecionado ?? undefined)} fotoUrl={contatoSelecionado?.foto_url ?? null} size={36} />
+            <ContactAvatar nome={resolverNome(selecionada, contatoSelecionado ?? undefined)} seed={selecionada.telefone} size={36} />
             <div>
               <p className="text-sm font-semibold text-gray-900">{resolverNome(selecionada, contatoSelecionado ?? undefined)}</p>
               <p className="text-xs text-gray-400">{formatPhone(selecionada.telefone)}</p>
@@ -261,7 +267,7 @@ export default function InboxPage() {
         <div className="w-72 flex-shrink-0 bg-white border-l border-gray-100 overflow-y-auto">
           <div className="p-5">
             <div className="text-center mb-4">
-              <ContactAvatar nome={resolverNome(selecionada, contatoSelecionado ?? undefined)} fotoUrl={contatoSelecionado?.foto_url ?? null} size={64} />
+              <ContactAvatar nome={resolverNome(selecionada, contatoSelecionado ?? undefined)} seed={selecionada.telefone} size={64} />
               <h2 className="text-base font-bold text-gray-900 mt-3">{resolverNome(selecionada, contatoSelecionado ?? undefined)}</h2>
               <p className="text-sm text-gray-500">{formatPhone(selecionada.telefone)}</p>
               {contatoSelecionado?.etapa && (
