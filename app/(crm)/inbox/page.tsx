@@ -113,6 +113,21 @@ export default function InboxPage() {
     return h[h.length - 1] ?? null
   }
 
+  // Resolve o nome correto na ordem de prioridade:
+  // 1. crm_contatos.nome (se existir e não for igual ao telefone)
+  // 2. conversas.nome (se não for igual ao telefone)
+  // 3. telefone formatado
+  function resolverNome(conv: Conversa, contato?: Contato): string {
+    const tel = conv.telefone
+    if (contato?.nome && contato.nome.trim() !== '' && contato.nome !== tel) {
+      return contato.nome
+    }
+    if (conv.nome && conv.nome.trim() !== '' && conv.nome !== tel) {
+      return conv.nome
+    }
+    return formatPhone(tel)
+  }
+
   return (
     <div className="flex h-full">
       {/* Lista de conversas */}
@@ -150,20 +165,26 @@ export default function InboxPage() {
             const contato = contatos[conv.telefone]
             const ultima = ultimaMensagem(conv)
             const ativa = selecionada?.telefone === conv.telefone
+            const nome = resolverNome(conv, contato)
             return (
               <button
                 key={conv.telefone}
                 onClick={() => selecionarConversa(conv)}
                 className={`w-full flex items-start gap-3 p-4 border-b border-gray-50 hover:bg-gray-50 transition-colors text-left ${ativa ? 'bg-blue-50 border-l-2 border-l-accent' : ''}`}
               >
-                <ContactAvatar nome={contato?.nome ?? conv.nome} fotoUrl={contato?.foto_url ?? null} size={44} />
+                <ContactAvatar nome={nome} fotoUrl={contato?.foto_url ?? null} size={44} />
                 <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-baseline">
-                    <p className="text-sm font-semibold text-gray-900 truncate">{contato?.nome ?? conv.nome ?? conv.telefone}</p>
-                    <span className="text-xs text-gray-400 flex-shrink-0 ml-1">{formatDate(conv.atualizado_em)}</span>
+                  <div className="flex justify-between items-baseline gap-1">
+                    <p className="text-sm font-semibold text-gray-900 truncate">{nome}</p>
+                    <span className="text-xs text-gray-400 flex-shrink-0">{formatDate(conv.atualizado_em)}</span>
                   </div>
+                  <p className="text-xs text-gray-400 truncate mt-0.5">
+                    {formatPhone(conv.telefone)}
+                  </p>
                   <p className="text-xs text-gray-500 truncate mt-0.5">
-                    {ultima ? (ultima.role === 'assistant' ? '✓ ' : '') + ultima.content : 'Sem mensagens'}
+                    {ultima
+                      ? (ultima.role === 'assistant' ? '✓ ' : '') + ultima.content
+                      : <span className="italic">Sem mensagens</span>}
                   </p>
                 </div>
               </button>
@@ -180,9 +201,9 @@ export default function InboxPage() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Chat header */}
           <div className="h-14 bg-white border-b border-gray-100 flex items-center px-4 gap-3 flex-shrink-0">
-            <ContactAvatar nome={contatoSelecionado?.nome ?? selecionada.nome} fotoUrl={contatoSelecionado?.foto_url ?? null} size={36} />
+            <ContactAvatar nome={resolverNome(selecionada, contatoSelecionado ?? undefined)} fotoUrl={contatoSelecionado?.foto_url ?? null} size={36} />
             <div>
-              <p className="text-sm font-semibold text-gray-900">{contatoSelecionado?.nome ?? selecionada.nome ?? selecionada.telefone}</p>
+              <p className="text-sm font-semibold text-gray-900">{resolverNome(selecionada, contatoSelecionado ?? undefined)}</p>
               <p className="text-xs text-gray-400">{formatPhone(selecionada.telefone)}</p>
             </div>
           </div>
@@ -240,8 +261,8 @@ export default function InboxPage() {
         <div className="w-72 flex-shrink-0 bg-white border-l border-gray-100 overflow-y-auto">
           <div className="p-5">
             <div className="text-center mb-4">
-              <ContactAvatar nome={contatoSelecionado?.nome ?? selecionada.nome} fotoUrl={contatoSelecionado?.foto_url ?? null} size={64} />
-              <h2 className="text-base font-bold text-gray-900 mt-3">{contatoSelecionado?.nome ?? selecionada.nome ?? 'Sem nome'}</h2>
+              <ContactAvatar nome={resolverNome(selecionada, contatoSelecionado ?? undefined)} fotoUrl={contatoSelecionado?.foto_url ?? null} size={64} />
+              <h2 className="text-base font-bold text-gray-900 mt-3">{resolverNome(selecionada, contatoSelecionado ?? undefined)}</h2>
               <p className="text-sm text-gray-500">{formatPhone(selecionada.telefone)}</p>
               {contatoSelecionado?.etapa && (
                 <span className="inline-block mt-2 px-3 py-1 rounded-full text-xs font-medium text-white" style={{ backgroundColor: contatoSelecionado.etapa.cor }}>
