@@ -13,15 +13,18 @@ export async function sendTextMessage(number: string, text: string) {
 }
 
 /** Busca base64 de uma mídia (áudio, imagem) pelo ID da mensagem no WhatsApp */
-export async function getAudioBase64(messageId: string): Promise<string | null> {
+export async function getAudioBase64(messageId: string, telefone?: string): Promise<string | null> {
   try {
+    const key: Record<string, string> = { id: messageId }
+    if (telefone) {
+      // remoteJid obrigatório pela Evolution API para localizar a mídia
+      const digits = telefone.replace(/\D/g, '')
+      key.remoteJid = `${digits}@s.whatsapp.net`
+    }
     const res = await fetch(`${BASE_URL}/chat/getBase64FromMediaMessage/${INSTANCE}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: API_KEY },
-      body: JSON.stringify({
-        message: { key: { id: messageId } },
-        convertToMp4: false,
-      }),
+      body: JSON.stringify({ message: { key }, convertToMp4: false }),
     })
     if (!res.ok) return null
     const data = await res.json()

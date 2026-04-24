@@ -33,8 +33,11 @@ export default function InboxPage() {
   }
 
   function getAudioMsgId(msg: Mensagem): string | undefined {
+    // Suporta tanto message_id (snake) quanto messageId (camelCase) vindo do n8n
     if (msg.message_id) return msg.message_id
-    const m = msg.content.match(/^\[(?:audio|ptt):([^\]]+)\]/)
+    const msgAny = msg as any
+    if (msgAny.messageId) return msgAny.messageId
+    const m = msg.content?.match(/^\[(?:audio|ptt):([^\]]+)\]/)
     return m?.[1]
   }
 
@@ -269,6 +272,7 @@ export default function InboxPage() {
                     {audio ? (
                       <AudioPlayer
                         messageId={msgId}
+                        telefone={selecionada.telefone}
                         isOwn={msg.role === 'assistant'}
                         darkBg={msg.role === 'assistant'}
                       />

@@ -3,10 +3,12 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { format, parseISO, isToday, isYesterday } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
-import { DndContext, DragOverlay, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
-import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { useSortable } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
+import {
+  DndContext, DragOverlay, DragEndEvent,
+  PointerSensor, useSensor, useSensors,
+  useDraggable, useDroppable,
+  pointerWithin,
+} from '@dnd-kit/core'
 import { supabase } from '@/lib/supabase'
 import { sendTextMessage, sendAudioMessage } from '@/lib/evolution'
 import ContactAvatar from '@/components/ContactAvatar'
@@ -38,17 +40,16 @@ function KanbanCard({ contato, ultimaMensagem, onClick }: {
   ultimaMensagem?: string
   onClick: () => void
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: contato.id })
-  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 }
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: contato.id })
 
   return (
     <div
       ref={setNodeRef}
-      style={style}
       {...attributes}
       {...listeners}
       onClick={onClick}
-      className="bg-white rounded-lg p-3 shadow-sm border border-gray-100 cursor-pointer hover:shadow-md transition-shadow"
+      style={{ opacity: isDragging ? 0.35 : 1, cursor: isDragging ? 'grabbing' : 'pointer' }}
+      className="bg-white rounded-lg p-3 shadow-sm border border-gray-100 hover:shadow-md transition-shadow touch-none"
     >
       <div className="flex items-center gap-2 mb-2">
         <ContactAvatar nome={contato.nome} seed={contato.telefone} size={32} />
@@ -59,6 +60,50 @@ function KanbanCard({ contato, ultimaMensagem, onClick }: {
       </div>
       {ultimaMensagem && <p className="text-xs text-gray-500 truncate">{ultimaMensagem}</p>}
       <p className="text-xs text-gray-400 mt-1">{formatDate(contato.atualizado_em)}</p>
+    </div>
+  )
+}
+
+// ─── DroppableColumn ────────────────────────────────────────────────────────
+// Componente separado é necessário pois useDroppable não pode ser chamado dentro de .map()
+
+function DroppableColumn({ etapa, cards, getUltimaMensagem, onCardClick }: {
+  etapa: EtapaFunil
+  cards: Contato[]
+  getUltimaMensagem: (tel: string) => string | undefined
+  onCardClick: (c: Contato) => void
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: etapa.id })
+
+  return (
+    <div className="w-64 flex-shrink-0 flex flex-col">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: etapa.cor }} />
+        <h2 className="text-sm font-semibold text-gray-700">{etapa.nome}</h2>
+        <span className="ml-auto bg-gray-100 text-gray-500 text-xs font-medium px-2 py-0.5 rounded-full">
+          {cards.length}
+        </span>
+      </div>
+      <div
+        ref={setNodeRef}
+        className={`flex-1 rounded-xl p-2 space-y-2 overflow-y-auto min-h-32 transition-colors ${
+          isOver ? 'bg-accent/10 ring-2 ring-accent/30' : 'bg-gray-100/60'
+        }`}
+      >
+        {cards.map(contato => (
+          <KanbanCard
+            key={contato.id}
+            contato={contato}
+            ultimaMensagem={getUltimaMensagem(contato.telefone)}
+            onClick={() => onCardClick(contato)}
+          />
+        ))}
+        {cards.length === 0 && (
+          <div className="flex items-center justify-center h-16 text-xs text-gray-400">
+            Sem contatos
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -121,7 +166,9 @@ function ContactPanel({ contato, onClose, onUpdate }: {
 
   function getAudioMsgId(msg: Mensagem): string | undefined {
     if (msg.message_id) return msg.message_id
-    const m = msg.content.match(/^\[(?:audio|ptt):([^\]]+)\]/)
+    const msgAny = msg as any
+    if (msgAny.messageId) return msgAny.messageId
+    const m = msg.content?.match(/^\[(?:audio|ptt):([^\]]+)\]/)
     return m?.[1]
   }
 
@@ -367,6 +414,7 @@ function ContactPanel({ contato, onClose, onUpdate }: {
                               {audio ? (
                                 <AudioPlayer
                                   messageId={msgId}
+                                  telefone={contato.telefone}
                                   isOwn={msg.role === 'assistant'}
                                   darkBg={false}
                                 />
@@ -615,18 +663,23 @@ export default function PipelinePage() {
     return conv.historico[conv.historico.length - 1].content
   }
 
-  async function handleDragEnd(event: any) {
+  async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
     setActiveId(null)
-    if (!over || active.id === over.id) return
-    const targetEtapaId =
-      etapas.find(e => e.id === over.id)?.id ??
-      contatos.find(c => c.id === over.id)?.etapa_funil_id
-    if (!targetEtapaId) return
-    const contato = contatos.find(c => c.id === active.id)
+    if (!over) return
+
+    const cardId = active.id as string
+    const targetEtapaId = over.id as string
+
+    // over.id deve ser o id de uma etapa (coluna droppable)
+    if (!etapas.find(e => e.id === targetEtapaId)) return
+
+    const contato = contatos.find(c => c.id === cardId)
     if (!contato || contato.etapa_funil_id === targetEtapaId) return
-    setContatos(prev => prev.map(c => c.id === active.id ? { ...c, etapa_funil_id: targetEtapaId } : c))
-    await supabase.from('crm_contatos').update({ etapa_funil_id: targetEtapaId }).eq('id', active.id)
+
+    // Update otimista imediato
+    setContatos(prev => prev.map(c => c.id === cardId ? { ...c, etapa_funil_id: targetEtapaId } : c))
+    await supabase.from('crm_contatos').update({ etapa_funil_id: targetEtapaId }).eq('id', cardId)
   }
 
   function handleContatoUpdate(id: string, patch: Partial<Contato>) {
@@ -684,46 +737,31 @@ export default function PipelinePage() {
         <div className="flex-1 overflow-x-auto px-6 py-4">
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCenter}
+            collisionDetection={pointerWithin}
             onDragStart={e => setActiveId(e.active.id as string)}
             onDragEnd={handleDragEnd}
           >
             <div className="flex gap-4 h-full" style={{ minWidth: etapas.length * 280 }}>
-              {etapas.map(etapa => {
-                const cards = getContatosByEtapa(etapa.id)
-                return (
-                  <div key={etapa.id} className="w-64 flex-shrink-0 flex flex-col">
-                    <div className="flex items-center gap-2 mb-3">
-                      <div className="w-3 h-3 rounded-full" style={{ backgroundColor: etapa.cor }} />
-                      <h2 className="text-sm font-semibold text-gray-700">{etapa.nome}</h2>
-                      <span className="ml-auto bg-gray-100 text-gray-500 text-xs font-medium px-2 py-0.5 rounded-full">{cards.length}</span>
-                    </div>
-                    <div className="flex-1 bg-gray-100/60 rounded-xl p-2 space-y-2 overflow-y-auto min-h-32">
-                      <SortableContext items={cards.map(c => c.id)} strategy={verticalListSortingStrategy}>
-                        {cards.map(contato => (
-                          <KanbanCard
-                            key={contato.id}
-                            contato={contato}
-                            ultimaMensagem={getUltimaMensagem(contato.telefone)}
-                            onClick={() => setDetalhes(contato)}
-                          />
-                        ))}
-                      </SortableContext>
-                      {cards.length === 0 && (
-                        <div className="flex items-center justify-center h-16 text-xs text-gray-400">Sem contatos</div>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
+              {etapas.map(etapa => (
+                <DroppableColumn
+                  key={etapa.id}
+                  etapa={etapa}
+                  cards={getContatosByEtapa(etapa.id)}
+                  getUltimaMensagem={getUltimaMensagem}
+                  onCardClick={setDetalhes}
+                />
+              ))}
             </div>
 
-            <DragOverlay>
+            <DragOverlay dropAnimation={{ duration: 150, easing: 'cubic-bezier(0.18,0.67,0.6,1.22)' }}>
               {activeContato && (
-                <div className="bg-white rounded-lg p-3 shadow-lg border border-gray-200 rotate-2 w-64">
+                <div className="bg-white rounded-lg p-3 shadow-xl border border-gray-200 rotate-1 w-64 opacity-95">
                   <div className="flex items-center gap-2">
                     <ContactAvatar nome={activeContato.nome} seed={activeContato.telefone} size={32} />
-                    <p className="text-sm font-semibold">{activeContato.nome}</p>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-gray-900 truncate">{activeContato.nome ?? 'Sem nome'}</p>
+                      <p className="text-xs text-gray-400">{formatPhone(activeContato.telefone)}</p>
+                    </div>
                   </div>
                 </div>
               )}
