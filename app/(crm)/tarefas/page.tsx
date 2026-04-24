@@ -1,14 +1,16 @@
 'use client'
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { formatDateTime } from '@/lib/utils'
 import { Plus, CheckCircle2, Circle, AlertCircle, Clock, Calendar, X } from 'lucide-react'
 import { format, parseISO, isToday, isBefore, isFuture, startOfTomorrow } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import type { Tarefa, Contato } from '@/types'
 
+// Tarefa enriquecida com join do contato
+type TarefaRich = Tarefa & { contato?: { nome: string | null; telefone: string } | null }
+
 export default function TarefasPage() {
-  const [tarefas, setTarefas] = useState<Tarefa[]>([])
+  const [tarefas, setTarefas] = useState<TarefaRich[]>([])
   const [contatos, setContatos] = useState<Contato[]>([])
   const [modalAberto, setModalAberto] = useState(false)
   const [form, setForm] = useState({ titulo: '', descricao: '', contato_id: '', vencimento: '' })
@@ -21,7 +23,7 @@ export default function TarefasPage() {
       supabase.from('tarefas').select('*, contato:crm_contatos(id,nome,telefone,foto_url)').order('vencimento', { ascending: true, nullsFirst: false }),
       supabase.from('crm_contatos').select('id,nome,telefone').order('nome'),
     ])
-    if (t) setTarefas(t as Tarefa[])
+    if (t) setTarefas(t as TarefaRich[])
     if (c) setContatos(c as Contato[])
   }
 
@@ -41,13 +43,13 @@ export default function TarefasPage() {
     await loadData()
   }
 
-  async function toggleStatus(tarefa: Tarefa) {
+  async function toggleStatus(tarefa: TarefaRich) {
     const novoStatus = tarefa.status === 'concluida' ? 'pendente' : 'concluida'
     await supabase.from('tarefas').update({ status: novoStatus }).eq('id', tarefa.id)
     await loadData()
   }
 
-  function categorizar(t: Tarefa[]): { vencidas: Tarefa[]; hoje: Tarefa[]; proximas: Tarefa[] } {
+  function categorizar(t: TarefaRich[]): { vencidas: TarefaRich[]; hoje: TarefaRich[]; proximas: TarefaRich[] } {
     const pendentes = t.filter(t => t.status === 'pendente')
     const agora = new Date()
     return {
@@ -60,7 +62,7 @@ export default function TarefasPage() {
   const { vencidas, hoje, proximas } = categorizar(tarefas)
   const concluidas = tarefas.filter(t => t.status === 'concluida')
 
-  function TarefaCard({ tarefa }: { tarefa: Tarefa }) {
+  function TarefaCard({ tarefa }: { tarefa: TarefaRich }) {
     const vencida = tarefa.vencimento && isBefore(parseISO(tarefa.vencimento), new Date()) && tarefa.status === 'pendente'
     return (
       <div className={`bg-white rounded-lg p-4 shadow-sm border flex items-start gap-3 ${vencida ? 'border-red-200' : 'border-gray-100'}`}>
@@ -89,7 +91,7 @@ export default function TarefasPage() {
     )
   }
 
-  function Section({ title, tasks, icon: Icon, color }: { title: string; tasks: Tarefa[]; icon: any; color: string }) {
+  function Section({ title, tasks, icon: Icon, color }: { title: string; tasks: TarefaRich[]; icon: React.ElementType; color: string }) {
     if (tasks.length === 0 && title !== 'Próximas') return null
     return (
       <div className="mb-6">

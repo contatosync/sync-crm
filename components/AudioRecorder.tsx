@@ -4,7 +4,6 @@ import { Mic, X, Check } from 'lucide-react'
 
 interface Props {
   onSend: (base64: string, mimeType: string) => Promise<void>
-  /** Notifica o pai sobre mudanças no estado de gravação */
   onRecordingChange?: (recording: boolean) => void
   disabled?: boolean
 }
@@ -22,7 +21,6 @@ export default function AudioRecorder({ onSend, onRecordingChange, disabled }: P
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
 
-  // Cleanup ao desmontar
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
@@ -44,17 +42,14 @@ export default function AudioRecorder({ onSend, onRecordingChange, disabled }: P
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
-
       const mimeType =
         MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
         MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
-
       const recorder = new MediaRecorder(stream, { mimeType })
       recorderRef.current = recorder
       chunksRef.current = []
       recorder.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
       recorder.start(100)
-
       setState('recording')
       onRecordingChange?.(true)
       setElapsed(0)
@@ -80,7 +75,6 @@ export default function AudioRecorder({ onSend, onRecordingChange, disabled }: P
     const recorder = recorderRef.current
     if (!recorder) { setState('idle'); onRecordingChange?.(false); return }
 
-    // Aguarda o último chunk
     await new Promise<void>(res => {
       recorder.onstop = () => res()
       if (recorder.state !== 'inactive') recorder.stop()
@@ -110,7 +104,6 @@ export default function AudioRecorder({ onSend, onRecordingChange, disabled }: P
     onRecordingChange?.(false)
   }
 
-  // ── Estado idle: apenas botão de mic ──
   if (state === 'idle') {
     return (
       <div className="relative flex-shrink-0">
@@ -124,7 +117,7 @@ export default function AudioRecorder({ onSend, onRecordingChange, disabled }: P
           onClick={startRecording}
           disabled={disabled}
           title="Gravar áudio"
-          className="w-10 h-10 flex items-center justify-center rounded-xl text-gray-400 hover:text-accent hover:bg-accent/10 transition-colors disabled:opacity-40"
+          className="w-10 h-10 flex items-center justify-center rounded-xl text-gray-400 hover:text-primary hover:bg-primary/10 transition-colors disabled:opacity-40"
         >
           <Mic size={18} />
         </button>
@@ -132,18 +125,10 @@ export default function AudioRecorder({ onSend, onRecordingChange, disabled }: P
     )
   }
 
-  // ── Estado gravando / enviando ──
   return (
     <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl px-3 py-2 flex-shrink-0">
-      {/* Dot pulsante */}
       <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
-
-      {/* Timer */}
-      <span className="text-sm font-mono text-red-600 min-w-[40px] tabular-nums">
-        {fmtSecs(elapsed)}
-      </span>
-
-      {/* Cancelar */}
+      <span className="text-sm font-mono text-red-600 min-w-[40px] tabular-nums">{fmtSecs(elapsed)}</span>
       <button
         type="button"
         onClick={cancelRecording}
@@ -153,8 +138,6 @@ export default function AudioRecorder({ onSend, onRecordingChange, disabled }: P
       >
         <X size={13} />
       </button>
-
-      {/* Confirmar */}
       <button
         type="button"
         onClick={confirmSend}

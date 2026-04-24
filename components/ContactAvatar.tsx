@@ -1,31 +1,28 @@
-import { getInitials, getAvatarColor } from '@/lib/utils'
+'use client'
+import { useState } from 'react'
+import { getAvatarColor, getInitials } from '@/lib/utils'
 
-interface Props {
-  nome: string | null
-  /** @deprecated URLs do WhatsApp CDN expiram — não usado */
-  fotoUrl?: string | null
-  /** Seed estável para a cor — preferencialmente o telefone */
-  seed?: string | null
-  size?: number
-}
+interface Props { nome?: string | null; seed: string; size?: number; fotoUrl?: string | null }
 
-export default function ContactAvatar({ nome, seed, size = 40 }: Props) {
-  // Usa o telefone (seed) como base da cor para ser estável mesmo quando o nome muda
-  const colorSeed = seed ?? nome ?? ''
+export default function ContactAvatar({ nome, seed, size = 36, fotoUrl }: Props) {
+  const [imgError, setImgError] = useState(false)
+  const initials = getInitials(nome ?? seed)
+  const color = getAvatarColor(seed)
+  const px = size
+  const fontSize = size < 32 ? 10 : size < 48 ? 13 : 18
+
+  if (fotoUrl && !imgError) {
+    return (
+      <img src={fotoUrl} alt={nome ?? ''} referrerPolicy="no-referrer"
+        onError={() => setImgError(true)}
+        style={{ width: px, height: px, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+      />
+    )
+  }
 
   return (
-    <div
-      style={{
-        width: size,
-        height: size,
-        backgroundColor: getAvatarColor(colorSeed),
-        fontSize: Math.round(size * 0.36),
-        flexShrink: 0,
-      }}
-      className="rounded-full flex items-center justify-center text-white font-bold select-none"
-      aria-label={nome ?? 'Contato'}
-    >
-      {getInitials(nome)}
+    <div style={{ width: px, height: px, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <span style={{ color: '#fff', fontSize, fontWeight: 600, lineHeight: 1 }}>{initials || '?'}</span>
     </div>
   )
 }

@@ -3,7 +3,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'Sync CRM',
-  description: 'CRM da Sync Studios',
+  description: 'CRM de atendimento via WhatsApp',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

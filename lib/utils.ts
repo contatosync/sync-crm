@@ -1,80 +1,62 @@
 import { format, parseISO, isToday, isYesterday } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 
-export function formatPhone(phone: string): string {
-  if (!phone) return ''
-
-  // JID de grupo (começa com 120363)
-  const raw = phone.replace(/\D/g, '')
-  if (raw.startsWith('120363')) return 'Grupo'
-
-  // Remove tudo que não for dígito
-  let digits = raw
-
-  // Números muito longos (>13 dígitos como addressingMode:lid) — pega últimos 11
-  if (digits.length > 13) {
-    digits = digits.slice(-11)
+export function formatPhone(tel: string): string {
+  const d = tel.replace(/\D/g, '')
+  if (d.startsWith('120363')) return 'Grupo'
+  if (d.length > 13) {
+    const last11 = d.slice(-11)
+    return `+55 (${last11.slice(0,2)}) ${last11.slice(2,7)}-${last11.slice(7)}`
   }
-
-  // Com código do país 55 (12 ou 13 dígitos)
-  if ((digits.length === 12 || digits.length === 13) && digits.startsWith('55')) {
-    const ddd = digits.slice(2, 4)
-    const num = digits.slice(4)
-    if (num.length === 9) return `+55 (${ddd}) ${num.slice(0, 5)}-${num.slice(5)}`
-    if (num.length === 8) return `+55 (${ddd}) ${num.slice(0, 4)}-${num.slice(4)}`
-  }
-
-  // Sem código do país (10 ou 11 dígitos)
-  if (digits.length === 11) {
-    return `+55 (${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`
-  }
-  if (digits.length === 10) {
-    return `+55 (${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`
-  }
-
-  return `+${digits}`
+  if (d.length === 13) return `+${d.slice(0,2)} (${d.slice(2,4)}) ${d.slice(4,9)}-${d.slice(9)}`
+  if (d.length === 12) return `+${d.slice(0,2)} (${d.slice(2,4)}) ${d.slice(4,8)}-${d.slice(8)}`
+  if (d.length === 11) return `(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`
+  if (d.length === 10) return `(${d.slice(0,2)}) ${d.slice(2,6)}-${d.slice(6)}`
+  return tel
 }
 
-export function formatDate(dateStr: string): string {
+export function formatDate(ts: string): string {
   try {
-    const date = parseISO(dateStr)
-    if (isToday(date)) return format(date, 'HH:mm')
-    if (isYesterday(date)) return 'Ontem'
-    return format(date, 'dd/MM/yyyy', { locale: ptBR })
-  } catch {
-    return ''
-  }
+    const d = parseISO(ts)
+    if (isToday(d)) return format(d, 'HH:mm')
+    if (isYesterday(d)) return 'Ontem'
+    return format(d, 'dd/MM/yy')
+  } catch { return '' }
 }
 
-export function formatDateTime(dateStr: string): string {
+export function formatDateFull(ts: string): string {
+  try { return format(parseISO(ts), "dd 'de' MMMM 'de' yyyy", { locale: ptBR }) } catch { return '' }
+}
+
+export function formatTime(ts: string): string {
+  try { return format(parseISO(ts), 'HH:mm') } catch { return '' }
+}
+
+export function formatDateTime(ts: string): string {
+  try { return format(parseISO(ts), 'dd/MM/yyyy HH:mm', { locale: ptBR }) } catch { return '' }
+}
+
+export function isGroupPhone(tel: string): boolean {
+  return tel.replace(/\D/g, '').startsWith('120363')
+}
+
+export function getAvatarColor(seed: string): string {
+  const colors = ['#6366F1','#8B5CF6','#EC4899','#EF4444','#F97316','#EAB308','#22C55E','#14B8A6','#3B82F6','#06B6D4']
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
+  return colors[h % colors.length]
+}
+
+export function getDateLabel(ts: string): string {
   try {
-    return format(parseISO(dateStr), 'dd/MM/yyyy HH:mm', { locale: ptBR })
-  } catch {
-    return ''
-  }
+    const d = parseISO(ts)
+    if (isToday(d)) return 'Hoje'
+    if (isYesterday(d)) return 'Ontem'
+    return format(d, "dd 'de' MMMM", { locale: ptBR })
+  } catch { return '' }
 }
 
 export function getInitials(name: string | null): string {
   if (!name) return '?'
-  return name.split(' ').slice(0,2).map(n => n[0]).join('').toUpperCase()
-}
-
-export function isGroupPhone(phone: string): boolean {
-  return phone.replace(/\D/g, '').startsWith('120363')
-}
-
-const AVATAR_COLORS = [
-  '#2563EB', '#16A34A', '#DC2626', '#9333EA', '#EA580C',
-  '#0891B2', '#BE185D', '#65A30D', '#7C3AED', '#B45309',
-]
-
-// Gera cor estável baseada no telefone (mais estável que o nome)
-export function getAvatarColor(seed: string | null): string {
-  if (!seed) return AVATAR_COLORS[0]
-  // Usa todos os caracteres para um hash mais distribuído
-  let hash = 0
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
-  }
-  return AVATAR_COLORS[hash % AVATAR_COLORS.length]
+  return name.split(' ').filter(Boolean).slice(0,2).map(w => w[0].toUpperCase()).join('')
 }

@@ -1,62 +1,48 @@
-const BASE_URL = process.env.NEXT_PUBLIC_EVOLUTION_URL!
-const API_KEY = process.env.NEXT_PUBLIC_EVOLUTION_KEY!
-const INSTANCE = process.env.NEXT_PUBLIC_EVOLUTION_INSTANCE!
+const BASE = 'https://evolution-evolution-api.ojjpm7.easypanel.host'
+const KEY = '429683C4C977415CAAFCCE10F7D57E11'
+const INST = 'Teste'
 
-export async function sendTextMessage(number: string, text: string) {
-  const res = await fetch(`${BASE_URL}/message/sendText/${INSTANCE}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: API_KEY },
+export async function sendText(number: string, text: string) {
+  const r = await fetch(`${BASE}/message/sendText/${INST}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', apikey: KEY },
     body: JSON.stringify({ number, text }),
   })
-  if (!res.ok) throw new Error('Falha ao enviar mensagem')
-  return res.json()
+  if (!r.ok) throw new Error('Erro ao enviar texto')
+  return r.json()
 }
 
-/**
- * Busca base64 de qualquer mídia (áudio, imagem, documento) pelo ID da mensagem.
- * Inclui fromMe: false e remoteJid para máxima compatibilidade com a Evolution API.
- */
-export async function getMediaBase64(messageId: string, telefone?: string): Promise<string | null> {
+export async function sendAudio(number: string, audio: string) {
+  const r = await fetch(`${BASE}/message/sendWhatsAppAudio/${INST}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', apikey: KEY },
+    body: JSON.stringify({ number, audio, encoding: true }),
+  })
+  if (!r.ok) throw new Error('Erro ao enviar áudio')
+}
+
+export async function sendImage(number: string, media: string, caption?: string) {
+  const b64 = media.includes(',') ? media.split(',')[1] : media
+  const r = await fetch(`${BASE}/message/sendMedia/${INST}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', apikey: KEY },
+    body: JSON.stringify({ number, mediatype: 'image', media: b64, caption: caption ?? '' }),
+  })
+  if (!r.ok) throw new Error('Erro ao enviar imagem')
+}
+
+export async function fetchMediaBase64(messageId: string, telefone: string, fromMe = false): Promise<string | null> {
   try {
-    const key: Record<string, unknown> = { id: messageId, fromMe: false }
-    if (telefone) {
-      const digits = telefone.replace(/\D/g, '')
-      key.remoteJid = `${digits}@s.whatsapp.net`
-    }
-    const res = await fetch(`${BASE_URL}/chat/getBase64FromMediaMessage/${INSTANCE}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: API_KEY },
-      body: JSON.stringify({ message: { key } }),
+    const digits = telefone.replace(/\D/g, '')
+    const r = await fetch(`${BASE}/chat/getBase64FromMediaMessage/${INST}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', apikey: KEY },
+      body: JSON.stringify({ message: { key: { id: messageId, remoteJid: `${digits}@s.whatsapp.net`, fromMe } } }),
     })
-    if (!res.ok) return null
-    const data = await res.json()
-    return data.base64 ?? data.mediaUrl ?? null
-  } catch {
-    return null
-  }
+    if (!r.ok) return null
+    const d = await r.json()
+    return d.base64 ?? d.mediaUrl ?? null
+  } catch { return null }
 }
 
-/** @deprecated Use getMediaBase64 — mantido para compatibilidade com AudioPlayer */
-export const getAudioBase64 = getMediaBase64
-
-/** Envia mensagem de áudio (PTT) via Evolution API */
-export async function sendAudioMessage(number: string, audioBase64: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}/message/sendWhatsAppAudio/${INSTANCE}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: API_KEY },
-    body: JSON.stringify({ number, audio: audioBase64, encoding: true }),
-  })
-  if (!res.ok) throw new Error('Falha ao enviar áudio')
-}
-
-/** Envia imagem via Evolution API */
-export async function sendMediaMessage(number: string, mediaBase64: string, caption?: string): Promise<void> {
-  // Remove prefixo data:…;base64, se presente
-  const media = mediaBase64.includes(',') ? mediaBase64.split(',')[1] : mediaBase64
-  const res = await fetch(`${BASE_URL}/message/sendMedia/${INSTANCE}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: API_KEY },
-    body: JSON.stringify({ number, mediatype: 'image', media, caption: caption ?? '' }),
-  })
-  if (!res.ok) throw new Error('Falha ao enviar imagem')
-}
+// Legacy aliases for backwards compat
+export const sendTextMessage = sendText
+export const sendAudioMessage = sendAudio
+export const sendMediaMessage = (number: string, media: string, caption?: string) => sendImage(number, media, caption)
+export const getMediaBase64 = fetchMediaBase64
