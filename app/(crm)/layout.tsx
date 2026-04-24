@@ -35,13 +35,7 @@ export default function CRMLayout({ children }: { children: React.ReactNode }) {
   const knownTimestamps = useRef<Record<string, number>>({})
   const initialized = useRef(false)
 
-  // Carrega lastSeen do localStorage
-  useEffect(() => {
-    const stored = localStorage.getItem('sync-crm-last-seen')
-    if (stored) {
-      try { setLastSeen(JSON.parse(stored)) } catch {}
-    }
-  }, [])
+  // lastSeen é carregado e inicializado dentro de loadConversas() na primeira carga
 
   // Verificação de auth
   useEffect(() => {
@@ -63,16 +57,38 @@ export default function CRMLayout({ children }: { children: React.ReactNode }) {
       .from('conversas')
       .select('telefone, atualizado_em, historico, nome')
       .order('atualizado_em', { ascending: false })
+      .range(0, 999)
 
     if (!data) return
 
     const convs = data as Conversa[]
 
-    // Na primeira carga, apenas registra timestamps sem disparar notificação
+    // Na primeira carga: registra timestamps E inicializa lastSeen para evitar
+    // falsos "não lidos" em conversas já existentes antes do app abrir.
     if (!initialized.current) {
+      let existingSeen: Record<string, number> = {}
+      try {
+        const stored = localStorage.getItem('sync-crm-last-seen')
+        if (stored) existingSeen = JSON.parse(stored)
+      } catch {}
+
+      const now = Date.now()
+      const nextSeen = { ...existingSeen }
+      let changed = false
+
       convs.forEach(c => {
         knownTimestamps.current[c.telefone] = new Date(c.atualizado_em).getTime()
+        // Marca como "vista agora" se nunca foi vista — evita unread flood no primeiro acesso
+        if (!nextSeen[c.telefone]) {
+          nextSeen[c.telefone] = now
+          changed = true
+        }
       })
+
+      if (changed) {
+        localStorage.setItem('sync-crm-last-seen', JSON.stringify(nextSeen))
+      }
+      setLastSeen(nextSeen)
       initialized.current = true
     }
 

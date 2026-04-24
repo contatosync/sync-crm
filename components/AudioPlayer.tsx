@@ -1,7 +1,7 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
 import { Play, Pause } from 'lucide-react'
-import { getAudioBase64 } from '@/lib/evolution'
+import { getMediaBase64 } from '@/lib/evolution'
 
 interface Props {
   /** ID da mensagem WhatsApp (campo messageId ou message_id no historico) */
@@ -82,7 +82,7 @@ export default function AudioPlayer({ messageId, telefone, isOwn, darkBg = false
     setFetchState('loading')
     pendingPlay.current = true
 
-    const result = await getAudioBase64(messageId, telefone)
+    const result = await getMediaBase64(messageId, telefone)
     if (!result) {
       setFetchState('error')
       pendingPlay.current = false
@@ -127,11 +127,11 @@ export default function AudioPlayer({ messageId, telefone, isOwn, darkBg = false
     ? { btn: 'bg-green-600 hover:bg-green-700 text-white', track: 'bg-green-900/20', fill: 'bg-green-700', time: 'text-gray-500' }
     : { btn: 'bg-gray-500 hover:bg-gray-600 text-white',   track: 'bg-gray-200',      fill: 'bg-gray-500', time: 'text-gray-400' }
 
-  // Sem messageId: não há como buscar o áudio
+  // Sem messageId: áudio recebido antes do webhook salvar o ID
   if (!messageId) {
     return (
-      <div className="flex items-center gap-2 py-0.5 text-sm opacity-70">
-        <span>🎵</span><span>Áudio (não disponível)</span>
+      <div className="flex items-center gap-2 py-0.5 text-sm opacity-60">
+        <span>🎵</span><span>Áudio não indexado</span>
       </div>
     )
   }
@@ -139,7 +139,7 @@ export default function AudioPlayer({ messageId, telefone, isOwn, darkBg = false
   // Erro ao buscar
   if (fetchState === 'error') {
     return (
-      <div className="flex items-center gap-2 py-0.5 text-sm opacity-70">
+      <div className="flex items-center gap-2 py-0.5 text-sm opacity-60">
         <span>🎵</span><span>Áudio indisponível</span>
       </div>
     )

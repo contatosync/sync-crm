@@ -1,13 +1,14 @@
 'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { sendTextMessage, sendAudioMessage } from '@/lib/evolution'
+import { sendTextMessage, sendAudioMessage, sendMediaMessage } from '@/lib/evolution'
 import { formatDate, formatDateTime, formatPhone } from '@/lib/utils'
 import { useUnread } from '@/lib/unread-context'
 import ContactAvatar from '@/components/ContactAvatar'
 import AudioPlayer from '@/components/AudioPlayer'
 import AudioRecorder from '@/components/AudioRecorder'
-import { Search, Send, X, Phone, Tag, FileText } from 'lucide-react'
+import ImageMessage from '@/components/ImageMessage'
+import { Search, Send, X, FileText, Paperclip } from 'lucide-react'
 import type { Conversa, Contato, EtapaFunil, Mensagem } from '@/types'
 
 export default function InboxPage() {
@@ -23,28 +24,37 @@ export default function InboxPage() {
   const [editandoObs, setEditandoObs] = useState(false)
   const [obs, setObs] = useState('')
   const [isRecording, setIsRecording] = useState(false)
+
+  // Imagens
+  const [pendingImage, setPendingImage] = useState<{ dataUrl: string; file: File } | null>(null)
+  const [localImages, setLocalImages] = useState<Record<string, string>>({}) // timestamp → dataUrl
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { markAsRead } = useUnread()
 
-  // ── Helpers de áudio ──────────────────────────────────────────────────────
+  // ── Helpers de mídia ──────────────────────────────────────────────────────
+
   function isAudioMsg(msg: Mensagem) {
     return msg.media_type === 'audio' || msg.media_type === 'ptt' ||
       msg.content.startsWith('[audio]') || msg.content.startsWith('[ptt]')
   }
 
-  function getAudioMsgId(msg: Mensagem): string | undefined {
-    // Suporta tanto message_id (snake) quanto messageId (camelCase) vindo do n8n
+  function isImageMsg(msg: Mensagem) {
+    return msg.media_type === 'image' || msg.content.startsWith('[image]')
+  }
+
+  function getMediaMsgId(msg: Mensagem): string | undefined {
     if (msg.message_id) return msg.message_id
     const msgAny = msg as any
     if (msgAny.messageId) return msgAny.messageId
-    const m = msg.content?.match(/^\[(?:audio|ptt):([^\]]+)\]/)
+    const m = msg.content?.match(/^\[(?:audio|ptt|image|document):([^\]]+)\]/)
     return m?.[1]
   }
 
   // Buscar dados iniciais
   useEffect(() => {
     loadData()
-    // Realtime subscription
     const channel = supabase
       .channel('conversas-inbox')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'conversas' }, () => {
@@ -56,8 +66,8 @@ export default function InboxPage() {
 
   async function loadData() {
     const [{ data: convData }, { data: contatoData }, { data: etapaData }] = await Promise.all([
-      supabase.from('conversas').select('*').order('atualizado_em', { ascending: false }),
-      supabase.from('crm_contatos').select('*, etapa:etapas_funil(*)'),
+      supabase.from('conversas').select('*').order('atualizado_em', { ascending: false }).range(0, 999),
+      supabase.from('crm_contatos').select('*, etapa:etapas_funil(*)').range(0, 999),
       supabase.from('etapas_funil').select('*').order('ordem'),
     ])
     if (convData) setConversas(convData as Conversa[])
@@ -79,6 +89,7 @@ export default function InboxPage() {
     setContatoSelecionado(contato)
     setObs(contato?.observacoes ?? '')
     setEditandoObs(false)
+    setPendingImage(null)
     markAsRead(conv.telefone)
   }
 
@@ -88,7 +99,6 @@ export default function InboxPage() {
       const updated = conversas.find(c => c.telefone === selecionada.telefone)
       if (updated) {
         setSelecionada(updated)
-        // Se a conversa selecionada recebeu nova mensagem, marca como lida imediatamente
         markAsRead(selecionada.telefone)
       }
       const contato = contatos[selecionada.telefone] ?? null
@@ -96,9 +106,57 @@ export default function InboxPage() {
     }
   }, [conversas, contatos])
 
+  // ── Selecionar imagem ──────────────────────────────────────────────────────
+
+  function handleImageSelect(file: File) {
+    if (!file.type.startsWith('image/')) return
+    const reader = new FileReader()
+    reader.onloadend = () => setPendingImage({ dataUrl: reader.result as string, file })
+    reader.readAsDataURL(file)
+  }
+
+  // ── Enviar mensagem (texto ou imagem) ─────────────────────────────────────
+
   async function handleEnviar(e: React.FormEvent) {
     e.preventDefault()
-    if (!selecionada || !mensagem.trim() || enviando) return
+    if (!selecionada || enviando) return
+
+    if (pendingImage) {
+      setEnviando(true)
+      const agora = new Date().toISOString()
+      const caption = mensagem.trim() || undefined
+      const novaMensagem: Mensagem = {
+        role: 'assistant',
+        content: '[image]',
+        media_type: 'image',
+        timestamp: agora,
+      }
+      const novoHistorico = [...(selecionada.historico ?? []), novaMensagem]
+
+      // Optimistic update com preview local
+      setLocalImages(prev => ({ ...prev, [agora]: pendingImage.dataUrl }))
+      setSelecionada(prev => prev ? { ...prev, historico: novoHistorico, atualizado_em: agora } : null)
+      setPendingImage(null)
+      setMensagem('')
+
+      try {
+        const base64 = pendingImage.dataUrl.split(',')[1]
+        await sendMediaMessage(selecionada.telefone, base64, caption)
+        await supabase.from('conversas').upsert({
+          telefone: selecionada.telefone,
+          historico: novoHistorico,
+          atualizado_em: agora,
+        }, { onConflict: 'telefone' })
+      } catch {
+        alert('Erro ao enviar imagem')
+      } finally {
+        setEnviando(false)
+        await loadData()
+      }
+      return
+    }
+
+    if (!mensagem.trim()) return
     setEnviando(true)
     try {
       await sendTextMessage(selecionada.telefone, mensagem.trim())
@@ -111,7 +169,7 @@ export default function InboxPage() {
       }, { onConflict: 'telefone' })
       setMensagem('')
       await loadData()
-    } catch (err) {
+    } catch {
       alert('Erro ao enviar mensagem')
     } finally {
       setEnviando(false)
@@ -156,7 +214,6 @@ export default function InboxPage() {
     return h[h.length - 1] ?? null
   }
 
-  // Nomes que sabemos ser do bot/conta própria — devem ser ignorados
   const NOMES_IGNORADOS = new Set(['sync', 'sync studios', 'bot', 'assistant'])
 
   function nomeValido(nome: string | null, telefone: string): boolean {
@@ -166,15 +223,22 @@ export default function InboxPage() {
     return true
   }
 
-  // Resolve o nome correto na ordem de prioridade:
-  // 1. crm_contatos.nome (se válido)
-  // 2. conversas.nome (se válido e diferente de nomes do bot)
-  // 3. Telefone formatado como fallback
   function resolverNome(conv: Conversa, contato?: Contato): string {
     const tel = conv.telefone
     if (nomeValido(contato?.nome ?? null, tel)) return contato!.nome!
     if (nomeValido(conv.nome ?? null, tel)) return conv.nome!
     return formatPhone(tel)
+  }
+
+  // ── Preview de última mensagem na lista ───────────────────────────────────
+
+  function previewUltimaMensagem(conv: Conversa): React.ReactNode {
+    const ultima = ultimaMensagem(conv)
+    if (!ultima) return <span className="italic">Sem mensagens</span>
+    const prefix = ultima.role === 'assistant' ? '✓ ' : ''
+    if (isAudioMsg(ultima)) return prefix + '🎵 Áudio'
+    if (isImageMsg(ultima)) return prefix + '🖼️ Imagem'
+    return prefix + ultima.content
   }
 
   return (
@@ -212,7 +276,6 @@ export default function InboxPage() {
         <div className="flex-1 overflow-y-auto">
           {conversasFiltradas.map(conv => {
             const contato = contatos[conv.telefone]
-            const ultima = ultimaMensagem(conv)
             const ativa = selecionada?.telefone === conv.telefone
             const nome = resolverNome(conv, contato)
             return (
@@ -231,9 +294,7 @@ export default function InboxPage() {
                     {formatPhone(conv.telefone)}
                   </p>
                   <p className="text-xs text-gray-500 truncate mt-0.5">
-                    {ultima
-                      ? (ultima.role === 'assistant' ? '✓ ' : '') + (isAudioMsg(ultima) ? '🎵 Áudio' : ultima.content)
-                      : <span className="italic">Sem mensagens</span>}
+                    {previewUltimaMensagem(conv)}
                   </p>
                 </div>
               </button>
@@ -257,24 +318,48 @@ export default function InboxPage() {
             </div>
           </div>
 
-          {/* Mensagens */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
+          {/* Input de arquivo oculto */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept="image/*"
+            className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleImageSelect(f); e.target.value = '' }}
+          />
+
+          {/* Mensagens — com suporte a drag & drop de imagens */}
+          <div
+            className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50"
+            onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
+            onDrop={e => {
+              e.preventDefault()
+              const file = e.dataTransfer.files?.[0]
+              if (file?.type.startsWith('image/')) handleImageSelect(file)
+            }}
+          >
             {(selecionada.historico ?? []).map((msg, i) => {
               const audio = isAudioMsg(msg)
-              const msgId = getAudioMsgId(msg)
+              const image = isImageMsg(msg)
+              const msgId = getMediaMsgId(msg)
               return (
                 <div key={i} className={`flex ${msg.role === 'assistant' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`rounded-2xl px-4 py-2.5 ${
                     msg.role === 'assistant'
                       ? 'bg-whatsapp text-white rounded-tr-sm'
                       : 'bg-white text-gray-900 rounded-tl-sm shadow-sm'
-                  } ${audio ? '' : 'max-w-xs lg:max-w-md xl:max-w-lg'}`}>
+                  } ${(audio || image) ? '' : 'max-w-xs lg:max-w-md xl:max-w-lg'}`}>
                     {audio ? (
                       <AudioPlayer
                         messageId={msgId}
                         telefone={selecionada.telefone}
                         isOwn={msg.role === 'assistant'}
                         darkBg={msg.role === 'assistant'}
+                      />
+                    ) : image ? (
+                      <ImageMessage
+                        messageId={msgId}
+                        telefone={selecionada.telefone}
+                        localDataUrl={localImages[msg.timestamp]}
                       />
                     ) : (
                       <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
@@ -289,13 +374,39 @@ export default function InboxPage() {
             <div ref={messagesEndRef} />
           </div>
 
+          {/* Preview de imagem pendente */}
+          {pendingImage && (
+            <div className="bg-gray-50 border-t border-gray-100 px-4 pt-2 pb-1 flex items-center gap-3 flex-shrink-0">
+              <img src={pendingImage.dataUrl} alt="Preview" className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-gray-700 truncate">{pendingImage.file.name}</p>
+                <p className="text-[10px] text-gray-400">{(pendingImage.file.size / 1024).toFixed(0)} KB · clique Enviar para confirmar</p>
+              </div>
+              <button type="button" onClick={() => setPendingImage(null)} className="text-gray-400 hover:text-red-500 p-1.5 rounded-lg hover:bg-red-50 transition-colors">
+                <X size={15} />
+              </button>
+            </div>
+          )}
+
           {/* Input */}
           <form onSubmit={handleEnviar} className="bg-white border-t border-gray-100 p-3 flex gap-2 items-center flex-shrink-0">
+            {/* Botão de anexar imagem */}
+            {!isRecording && (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={enviando}
+                title="Enviar imagem"
+                className="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-xl text-gray-400 hover:text-accent hover:bg-accent/10 transition-colors disabled:opacity-40"
+              >
+                <Paperclip size={18} />
+              </button>
+            )}
             {!isRecording && (
               <input
                 value={mensagem}
                 onChange={e => setMensagem(e.target.value)}
-                placeholder="Digite uma mensagem..."
+                placeholder={pendingImage ? 'Legenda (opcional)…' : 'Digite uma mensagem...'}
                 className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
               />
             )}
@@ -307,11 +418,13 @@ export default function InboxPage() {
             {!isRecording && (
               <button
                 type="submit"
-                disabled={!mensagem.trim() || enviando}
+                disabled={(!mensagem.trim() && !pendingImage) || enviando}
                 className="bg-accent text-white rounded-xl px-4 py-2.5 hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
               >
                 <Send size={16} />
-                <span className="text-sm font-medium hidden sm:block">Enviar</span>
+                <span className="text-sm font-medium hidden sm:block">
+                  {pendingImage ? 'Enviar' : 'Enviar'}
+                </span>
               </button>
             )}
           </form>

@@ -10,12 +10,13 @@ import {
   pointerWithin,
 } from '@dnd-kit/core'
 import { supabase } from '@/lib/supabase'
-import { sendTextMessage, sendAudioMessage } from '@/lib/evolution'
+import { sendTextMessage, sendAudioMessage, sendMediaMessage } from '@/lib/evolution'
 import ContactAvatar from '@/components/ContactAvatar'
 import AudioPlayer from '@/components/AudioPlayer'
 import AudioRecorder from '@/components/AudioRecorder'
+import ImageMessage from '@/components/ImageMessage'
 import { formatPhone, formatDate, isGroupPhone } from '@/lib/utils'
-import { MessageSquare, Users, X, Send, CheckSquare, Square, Plus } from 'lucide-react'
+import { MessageSquare, Users, X, Send, CheckSquare, Square, Plus, Paperclip } from 'lucide-react'
 import type { Contato, EtapaFunil, Conversa, Mensagem, Tarefa } from '@/types'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -31,6 +32,23 @@ function getDateLabel(timestamp: string): string {
 
 function msgTime(timestamp: string): string {
   try { return format(parseISO(timestamp), 'HH:mm') } catch { return '' }
+}
+
+function isAudioMsg(msg: Mensagem) {
+  return msg.media_type === 'audio' || msg.media_type === 'ptt' ||
+    msg.content.startsWith('[audio]') || msg.content.startsWith('[ptt]')
+}
+
+function isImageMsg(msg: Mensagem) {
+  return msg.media_type === 'image' || msg.content.startsWith('[image]')
+}
+
+function getMediaMsgId(msg: Mensagem): string | undefined {
+  if (msg.message_id) return msg.message_id
+  const msgAny = msg as any
+  if (msgAny.messageId) return msgAny.messageId
+  const m = msg.content?.match(/^\[(?:audio|ptt|image|document):([^\]]+)\]/)
+  return m?.[1]
 }
 
 // ─── KanbanCard ─────────────────────────────────────────────────────────────
@@ -157,20 +175,10 @@ function ContactPanel({ contato, onClose, onUpdate }: {
   const [msgTexto, setMsgTexto] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
+  const [pendingImage, setPendingImage] = useState<{ dataUrl: string; file: File } | null>(null)
+  const [localImages, setLocalImages] = useState<Record<string, string>>({})
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-
-  function isAudioMsg(msg: Mensagem) {
-    return msg.media_type === 'audio' || msg.media_type === 'ptt' ||
-      msg.content.startsWith('[audio]') || msg.content.startsWith('[ptt]')
-  }
-
-  function getAudioMsgId(msg: Mensagem): string | undefined {
-    if (msg.message_id) return msg.message_id
-    const msgAny = msg as any
-    if (msgAny.messageId) return msgAny.messageId
-    const m = msg.content?.match(/^\[(?:audio|ptt):([^\]]+)\]/)
-    return m?.[1]
-  }
 
   // Detalhes
   const [editNome, setEditNome]     = useState(contato.nome ?? '')
@@ -190,6 +198,7 @@ function ContactPanel({ contato, onClose, onUpdate }: {
   useEffect(() => {
     setPanelTab('conversa')
     setMsgTexto('')
+    setPendingImage(null)
     setEditNome(contato.nome ?? '')
     setEditEmail(contato.email ?? '')
     setEditStatus(contato.status ?? '')
@@ -223,9 +232,50 @@ function ContactPanel({ contato, onClose, onUpdate }: {
     if (data) setTarefas(data as Tarefa[])
   }
 
+  function handleImageSelect(file: File) {
+    if (!file.type.startsWith('image/')) return
+    const reader = new FileReader()
+    reader.onloadend = () => setPendingImage({ dataUrl: reader.result as string, file })
+    reader.readAsDataURL(file)
+  }
+
   async function handleEnviarMsg(e: React.FormEvent) {
     e.preventDefault()
-    if (!msgTexto.trim() || enviando) return
+    if (enviando) return
+
+    if (pendingImage) {
+      setEnviando(true)
+      const agora = new Date().toISOString()
+      const caption = msgTexto.trim() || undefined
+      const novaMensagem: Mensagem = { role: 'assistant', content: '[image]', media_type: 'image', timestamp: agora }
+      const prevHistorico = conversa?.historico ?? []
+      const novoHistorico = [...prevHistorico, novaMensagem]
+
+      // Optimistic update com preview local
+      setLocalImages(prev => ({ ...prev, [agora]: pendingImage.dataUrl }))
+      setConversa(prev => ({
+        id: prev?.id ?? '', nome: prev?.nome ?? contato.nome,
+        telefone: contato.telefone, historico: novoHistorico, atualizado_em: agora,
+      }))
+      setPendingImage(null)
+      setMsgTexto('')
+
+      try {
+        const base64 = pendingImage.dataUrl.split(',')[1]
+        await sendMediaMessage(contato.telefone, base64, caption)
+        await supabase.from('conversas').upsert({
+          telefone: contato.telefone, historico: novoHistorico, atualizado_em: agora,
+        }, { onConflict: 'telefone' })
+      } catch {
+        alert('Erro ao enviar imagem')
+        setConversa(prev => prev ? { ...prev, historico: prevHistorico } : null)
+      } finally {
+        setEnviando(false)
+      }
+      return
+    }
+
+    if (!msgTexto.trim()) return
     setEnviando(true)
     const text = msgTexto.trim()
     const agora = new Date().toISOString()
@@ -233,7 +283,6 @@ function ContactPanel({ contato, onClose, onUpdate }: {
     const prevHistorico = conversa?.historico ?? []
     const novoHistorico = [...prevHistorico, novaMensagem]
 
-    // Optimistic update
     setConversa(prev => ({
       id: prev?.id ?? '',
       nome: prev?.nome ?? contato.nome,
@@ -246,9 +295,7 @@ function ContactPanel({ contato, onClose, onUpdate }: {
     try {
       await sendTextMessage(contato.telefone, text)
       await supabase.from('conversas').upsert({
-        telefone: contato.telefone,
-        historico: novoHistorico,
-        atualizado_em: agora,
+        telefone: contato.telefone, historico: novoHistorico, atualizado_em: agora,
       }, { onConflict: 'telefone' })
     } catch {
       alert('Erro ao enviar mensagem')
@@ -374,7 +421,24 @@ function ContactPanel({ contato, onClose, onUpdate }: {
         {/* ── Aba: Conversa ── */}
         {panelTab === 'conversa' && (
           <>
-            <div className="flex-1 overflow-y-auto p-3 space-y-1 bg-[#F0F2F5]">
+            {/* Input de arquivo oculto */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept="image/*"
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleImageSelect(f); e.target.value = '' }}
+            />
+
+            <div
+              className="flex-1 overflow-y-auto p-3 space-y-1 bg-[#F0F2F5]"
+              onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
+              onDrop={e => {
+                e.preventDefault()
+                const file = e.dataTransfer.files?.[0]
+                if (file?.type.startsWith('image/')) handleImageSelect(file)
+              }}
+            >
               {carregando ? (
                 <div className="flex justify-center py-10">
                   <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
@@ -390,6 +454,9 @@ function ContactPanel({ contato, onClose, onUpdate }: {
                   const dateLabel = getDateLabel(msg.timestamp)
                   const showSep = dateLabel !== lastDate
                   if (showSep) lastDate = dateLabel
+                  const audio = isAudioMsg(msg)
+                  const image = isImageMsg(msg)
+                  const msgId = getMediaMsgId(msg)
                   return (
                     <React.Fragment key={i}>
                       {showSep && (
@@ -402,29 +469,29 @@ function ContactPanel({ contato, onClose, onUpdate }: {
                         </div>
                       )}
                       <div className={`flex ${msg.role === 'assistant' ? 'justify-end' : 'justify-start'}`}>
-                        {(() => {
-                          const audio = isAudioMsg(msg)
-                          const msgId = getAudioMsgId(msg)
-                          return (
-                            <div className={`rounded-2xl px-3 py-2 shadow-sm ${
-                              msg.role === 'assistant'
-                                ? 'bg-[#DCF8C6] text-gray-900 rounded-tr-sm'
-                                : 'bg-white text-gray-900 rounded-tl-sm'
-                            } ${audio ? '' : 'max-w-[82%]'}`}>
-                              {audio ? (
-                                <AudioPlayer
-                                  messageId={msgId}
-                                  telefone={contato.telefone}
-                                  isOwn={msg.role === 'assistant'}
-                                  darkBg={false}
-                                />
-                              ) : (
-                                <p className="text-sm whitespace-pre-wrap break-words leading-snug">{msg.content}</p>
-                              )}
-                              <p className="text-[10px] text-gray-400 mt-0.5 text-right">{msgTime(msg.timestamp)}</p>
-                            </div>
-                          )
-                        })()}
+                        <div className={`rounded-2xl px-3 py-2 shadow-sm ${
+                          msg.role === 'assistant'
+                            ? 'bg-[#DCF8C6] text-gray-900 rounded-tr-sm'
+                            : 'bg-white text-gray-900 rounded-tl-sm'
+                        } ${(audio || image) ? '' : 'max-w-[82%]'}`}>
+                          {audio ? (
+                            <AudioPlayer
+                              messageId={msgId}
+                              telefone={contato.telefone}
+                              isOwn={msg.role === 'assistant'}
+                              darkBg={false}
+                            />
+                          ) : image ? (
+                            <ImageMessage
+                              messageId={msgId}
+                              telefone={contato.telefone}
+                              localDataUrl={localImages[msg.timestamp]}
+                            />
+                          ) : (
+                            <p className="text-sm whitespace-pre-wrap break-words leading-snug">{msg.content}</p>
+                          )}
+                          <p className="text-[10px] text-gray-400 mt-0.5 text-right">{msgTime(msg.timestamp)}</p>
+                        </div>
                       </div>
                     </React.Fragment>
                   )
@@ -433,12 +500,38 @@ function ContactPanel({ contato, onClose, onUpdate }: {
               <div ref={messagesEndRef} />
             </div>
 
+            {/* Preview de imagem pendente */}
+            {pendingImage && (
+              <div className="flex-shrink-0 bg-gray-50 border-t border-gray-100 px-3 pt-2 pb-1 flex items-center gap-2">
+                <img src={pendingImage.dataUrl} alt="Preview" className="w-14 h-14 object-cover rounded-lg border border-gray-200" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-gray-700 truncate">{pendingImage.file.name}</p>
+                  <p className="text-[10px] text-gray-400">{(pendingImage.file.size / 1024).toFixed(0)} KB</p>
+                </div>
+                <button type="button" onClick={() => setPendingImage(null)} className="text-gray-400 hover:text-red-500 p-1 transition-colors">
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
             <form onSubmit={handleEnviarMsg} className="flex-shrink-0 p-3 bg-white border-t border-gray-100 flex gap-2 items-center">
+              {/* Botão de anexar imagem */}
+              {!isRecording && (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={enviando}
+                  title="Enviar imagem"
+                  className="w-9 h-9 flex-shrink-0 flex items-center justify-center rounded-xl text-gray-400 hover:text-accent hover:bg-accent/10 transition-colors disabled:opacity-40"
+                >
+                  <Paperclip size={17} />
+                </button>
+              )}
               {!isRecording && (
                 <input
                   value={msgTexto}
                   onChange={e => setMsgTexto(e.target.value)}
-                  placeholder="Digite uma mensagem..."
+                  placeholder={pendingImage ? 'Legenda (opcional)…' : 'Digite uma mensagem...'}
                   className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
                 />
               )}
@@ -450,7 +543,7 @@ function ContactPanel({ contato, onClose, onUpdate }: {
               {!isRecording && (
                 <button
                   type="submit"
-                  disabled={!msgTexto.trim() || enviando}
+                  disabled={(!msgTexto.trim() && !pendingImage) || enviando}
                   className="bg-accent text-white rounded-xl px-3 py-2.5 hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center"
                 >
                   <Send size={15} />
@@ -639,10 +732,11 @@ export default function PipelinePage() {
   useEffect(() => { loadData() }, [])
 
   async function loadData() {
+    // .range(0, 999) garante que busca até 1000 registros (padrão Supabase limitado a 100 em algumas configs)
     const [{ data: etapaData }, { data: contatoData }, { data: convData }] = await Promise.all([
       supabase.from('etapas_funil').select('*').order('ordem'),
-      supabase.from('crm_contatos').select('*').order('atualizado_em', { ascending: false }),
-      supabase.from('conversas').select('telefone, historico, atualizado_em'),
+      supabase.from('crm_contatos').select('*').order('atualizado_em', { ascending: false }).range(0, 999),
+      supabase.from('conversas').select('telefone, historico, atualizado_em').range(0, 999),
     ])
     if (etapaData) setEtapas(etapaData as EtapaFunil[])
     if (contatoData) setContatos(contatoData as Contato[])
@@ -660,7 +754,10 @@ export default function PipelinePage() {
   function getUltimaMensagem(telefone: string) {
     const conv = conversas[telefone]
     if (!conv?.historico?.length) return undefined
-    return conv.historico[conv.historico.length - 1].content
+    const last = conv.historico[conv.historico.length - 1]
+    if (isAudioMsg(last)) return '🎵 Áudio'
+    if (isImageMsg(last)) return '🖼️ Imagem'
+    return last.content
   }
 
   async function handleDragEnd(event: DragEndEvent) {
@@ -684,7 +781,6 @@ export default function PipelinePage() {
 
   function handleContatoUpdate(id: string, patch: Partial<Contato>) {
     setContatos(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c))
-    // Atualiza o painel aberto também
     setDetalhes(prev => prev?.id === id ? { ...prev, ...patch } : prev)
   }
 
