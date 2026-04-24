@@ -1,631 +1,425 @@
 'use client'
-import React, { useEffect, useState, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { Search, Plus, X, Send, Paperclip, ExternalLink, CheckSquare } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { sendText, sendAudio, sendImage } from '@/lib/evolution'
+import { formatPhone, formatDate, getDateLabel } from '@/lib/utils'
 import ContactAvatar from '@/components/ContactAvatar'
-import AudioPlayer from '@/components/AudioPlayer'
 import AudioRecorder from '@/components/AudioRecorder'
+import AudioPlayer from '@/components/AudioPlayer'
 import ImageMessage from '@/components/ImageMessage'
-import { formatPhone, formatDate, formatTime, isGroupPhone, getDateLabel } from '@/lib/utils'
-import { Search, X, Plus, MessageSquare, CheckSquare, Square, Send, Paperclip, FileText } from 'lucide-react'
-import type { Contato, EtapaFunil, Conversa, Mensagem, Tarefa } from '@/types'
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
+import type { Contato, Conversa, EtapaFunil, Mensagem, Tarefa } from '@/types'
 
 function getMediaMsgId(msg: Mensagem): string | undefined {
-  if (msg.messageId) return msg.messageId
-  if (msg.message_id) return msg.message_id
-  const m = msg.content?.match(/^\[(?:audio|ptt|image|document):([^\]]+)\]/)
-  return m?.[1]
+  return msg.messageId ?? msg.message_id ?? (() => {
+    const m = msg.content?.match(/^\[(?:audio|ptt|image|document):([^\]]+)\]/)
+    return m?.[1]
+  })()
 }
+function isAudioMsg(msg: Mensagem) { return msg.media_type==='audio'||msg.media_type==='ptt'||!!(msg.content?.startsWith('[audio')||msg.content?.startsWith('[ptt')) }
+function isImageMsg(msg: Mensagem) { return msg.media_type==='image'||!!(msg.content?.startsWith('[image')) }
 
-function isAudioMsg(msg: Mensagem) {
-  return msg.media_type === 'audio' || msg.media_type === 'ptt' ||
-    msg.content?.startsWith('[audio]') || msg.content?.startsWith('[ptt]')
-}
-
-function isImageMsg(msg: Mensagem) {
-  return msg.media_type === 'image' || msg.content?.startsWith('[image]')
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  lead: 'Lead', qualificado: 'Qualificado', cliente: 'Cliente', perdido: 'Perdido'
-}
-const STATUS_COLORS: Record<string, string> = {
-  cliente: 'bg-green-100 text-green-700',
-  qualificado: 'bg-blue-100 text-blue-700',
-  perdido: 'bg-red-100 text-red-700',
-  lead: 'bg-gray-100 text-gray-600',
-}
-
-// ── Side panel ────────────────────────────────────────────────────────────────
-
-function ContactSidePanel({ contato, etapas, onClose, onUpdate }: {
-  contato: Contato; etapas: EtapaFunil[]; onClose: () => void
-  onUpdate: (patch: Partial<Contato>) => void
-}) {
-  type Tab = 'historico' | 'tarefas' | 'detalhes'
-  const [tab, setTab] = useState<Tab>('historico')
-  const [conversa, setConversa] = useState<Conversa | null>(null)
-  const [convLoading, setConvLoading] = useState(false)
-  const [msgText, setMsgText] = useState('')
-  const [sending, setSending] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
-  const [pendingImage, setPendingImage] = useState<{ dataUrl: string; file: File } | null>(null)
-  const [localImages, setLocalImages] = useState<Record<string, string>>({})
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const endRef = useRef<HTMLDivElement>(null)
-
-  const [editNome, setEditNome] = useState(contato.nome ?? '')
-  const [editEmail, setEditEmail] = useState(contato.email ?? '')
-  const [editStatus, setEditStatus] = useState(contato.status ?? '')
-  const [editObs, setEditObs] = useState(contato.observacoes ?? '')
-  const [editEtapa, setEditEtapa] = useState(contato.etapa_funil_id ?? '')
-  const [editOrigem, setEditOrigem] = useState(contato.origem ?? '')
-  const [saving, setSaving] = useState(false)
-  const [savedOk, setSavedOk] = useState(false)
-
-  const [tarefas, setTarefas] = useState<Tarefa[]>([])
-  const [addingTask, setAddingTask] = useState(false)
-  const [newTitle, setNewTitle] = useState('')
-  const [newDate, setNewDate] = useState('')
-
-  useEffect(() => {
-    setTab('historico')
-    setMsgText('')
-    setPendingImage(null)
-    setEditNome(contato.nome ?? '')
-    setEditEmail(contato.email ?? '')
-    setEditStatus(contato.status ?? '')
-    setEditObs(contato.observacoes ?? '')
-    setEditEtapa(contato.etapa_funil_id ?? '')
-    setEditOrigem(contato.origem ?? '')
-    loadConversa()
-    loadTarefas()
-  }, [contato.id])
-
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [conversa?.historico?.length])
-
-  async function loadConversa() {
-    setConvLoading(true)
-    const { data } = await supabase.from('conversas').select('*').eq('telefone', contato.telefone).maybeSingle()
-    setConversa(data as Conversa | null)
-    setConvLoading(false)
-  }
-
-  async function loadTarefas() {
-    const { data } = await supabase.from('tarefas').select('*').eq('contato_id', contato.id).order('criado_em', { ascending: false })
-    if (data) setTarefas(data as Tarefa[])
-  }
-
-  function handleImageSelect(file: File) {
-    if (!file.type.startsWith('image/')) return
-    const reader = new FileReader()
-    reader.onloadend = () => setPendingImage({ dataUrl: reader.result as string, file })
-    reader.readAsDataURL(file)
-  }
-
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault()
-    if (sending) return
-    if (pendingImage) {
-      setSending(true)
-      const agora = new Date().toISOString()
-      const caption = msgText.trim() || undefined
-      const novaMensagem: Mensagem = { role: 'assistant', content: '[image]', media_type: 'image', timestamp: agora }
-      const prev = conversa?.historico ?? []
-      const novoHist = [...prev, novaMensagem]
-      setLocalImages(p => ({ ...p, [agora]: pendingImage.dataUrl }))
-      setConversa(c => ({ id: c?.id ?? '', nome: c?.nome ?? contato.nome, telefone: contato.telefone, historico: novoHist, atualizado_em: agora }))
-      setPendingImage(null); setMsgText('')
-      try {
-        await sendImage(contato.telefone, pendingImage.dataUrl.split(',')[1], caption)
-        await supabase.from('conversas').upsert({ telefone: contato.telefone, historico: novoHist, atualizado_em: agora }, { onConflict: 'telefone' })
-      } catch { alert('Erro ao enviar imagem') }
-      finally { setSending(false) }
-      return
-    }
-    if (!msgText.trim()) return
-    setSending(true)
-    const msg = msgText.trim()
-    const agora = new Date().toISOString()
-    const novaMensagem: Mensagem = { role: 'assistant', content: msg, timestamp: agora }
-    const prev = conversa?.historico ?? []
-    const novoHist = [...prev, novaMensagem]
-    setConversa(c => ({ id: c?.id ?? '', nome: c?.nome ?? contato.nome, telefone: contato.telefone, historico: novoHist, atualizado_em: agora }))
-    setMsgText('')
-    try {
-      await sendText(contato.telefone, msg)
-      await supabase.from('conversas').upsert({ telefone: contato.telefone, historico: novoHist, atualizado_em: agora }, { onConflict: 'telefone' })
-    } catch { alert('Erro ao enviar'); setMsgText(msg) }
-    finally { setSending(false) }
-  }
-
-  async function handleSendAudio(base64: string) {
-    const agora = new Date().toISOString()
-    const novaMensagem: Mensagem = { role: 'assistant', content: '[ptt]', media_type: 'ptt', timestamp: agora }
-    const novoHist = [...(conversa?.historico ?? []), novaMensagem]
-    setConversa(c => ({ id: c?.id ?? '', nome: c?.nome ?? contato.nome, telefone: contato.telefone, historico: novoHist, atualizado_em: agora }))
-    await sendAudio(contato.telefone, base64)
-    await supabase.from('conversas').upsert({ telefone: contato.telefone, historico: novoHist, atualizado_em: agora }, { onConflict: 'telefone' })
-  }
-
-  async function saveDetails() {
-    setSaving(true)
-    const patch = {
-      nome: editNome || null, email: editEmail || null, status: editStatus || null,
-      observacoes: editObs || null, etapa_funil_id: editEtapa || null, origem: editOrigem || null,
-    }
-    await supabase.from('crm_contatos').update(patch).eq('id', contato.id)
-    setSaving(false); setSavedOk(true); setTimeout(() => setSavedOk(false), 2000)
-    onUpdate(patch)
-  }
-
-  async function createTask() {
-    if (!newTitle.trim()) return
-    const { data } = await supabase.from('tarefas').insert({ contato_id: contato.id, titulo: newTitle.trim(), vencimento: newDate || null, status: 'pendente' }).select().single()
-    if (data) setTarefas(p => [data as Tarefa, ...p])
-    setNewTitle(''); setNewDate(''); setAddingTask(false)
-  }
-
-  async function toggleTask(t: Tarefa) {
-    const s = t.status === 'concluida' ? 'pendente' : 'concluida'
-    setTarefas(p => p.map(x => x.id === t.id ? { ...x, status: s } : x))
-    await supabase.from('tarefas').update({ status: s }).eq('id', t.id)
-  }
-
-  const hist = conversa?.historico ?? []
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'historico', label: 'Histórico' },
-    { key: 'tarefas', label: tarefas.length > 0 ? `Tarefas (${tarefas.length})` : 'Tarefas' },
-    { key: 'detalhes', label: 'Detalhes' },
-  ]
-
-  return (
-    <>
-      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
-      <div className="fixed right-0 top-0 h-full w-[420px] bg-white shadow-2xl z-50 flex flex-col">
-        {/* Header */}
-        <div className="flex-shrink-0 p-5 border-b border-gray-100">
-          <div className="flex items-start gap-4">
-            <ContactAvatar nome={contato.nome} seed={contato.telefone} size={56} fotoUrl={contato.foto_url} />
-            <div className="flex-1 min-w-0">
-              <p className="text-lg font-bold text-gray-900 truncate">{contato.nome ?? 'Sem nome'}</p>
-              <p className="text-sm text-gray-500">{formatPhone(contato.telefone)}</p>
-              <div className="flex flex-wrap gap-1.5 mt-1.5">
-                {contato.status && (
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold capitalize ${STATUS_COLORS[contato.status] ?? 'bg-gray-100 text-gray-600'}`}>{contato.status}</span>
-                )}
-                {contato.origem && (
-                  <span className="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full capitalize">{contato.origem}</span>
-                )}
-              </div>
-            </div>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-gray-100 transition-colors flex-shrink-0"><X size={18} /></button>
-          </div>
-          <div className="flex mt-4 bg-gray-100 rounded-lg p-0.5 gap-0.5">
-            {tabs.map(t => (
-              <button key={t.key} onClick={() => setTab(t.key)}
-                className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all ${tab === t.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Tab: Histórico */}
-        {tab === 'historico' && (
-          <>
-            <input type="file" ref={fileInputRef} accept="image/*" className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) handleImageSelect(f); e.target.value = '' }}
-            />
-            <div className="flex-1 overflow-y-auto p-3 space-y-1 bg-[#F0F2F5]"
-              onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
-              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f?.type.startsWith('image/')) handleImageSelect(f) }}
-            >
-              {convLoading ? (
-                <div className="flex justify-center py-10"><div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>
-              ) : hist.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-48 text-gray-400">
-                  <MessageSquare size={32} className="mb-2 opacity-30" />
-                  <p className="text-sm">Nenhuma mensagem</p>
-                </div>
-              ) : (() => {
-                let lastDate = ''
-                return hist.map((msg, i) => {
-                  const dateLabel = getDateLabel(msg.timestamp)
-                  const showSep = dateLabel !== lastDate
-                  if (showSep) lastDate = dateLabel
-                  const isOwn = msg.role === 'assistant'
-                  const audio = isAudioMsg(msg)
-                  const image = isImageMsg(msg)
-                  const msgId = getMediaMsgId(msg)
-                  return (
-                    <React.Fragment key={i}>
-                      {showSep && (
-                        <div className="flex items-center gap-2 py-2">
-                          <div className="flex-1 h-px bg-gray-200/80" />
-                          <span className="text-[10px] text-gray-500 font-medium bg-[#F0F2F5] px-2 whitespace-nowrap">{dateLabel}</span>
-                          <div className="flex-1 h-px bg-gray-200/80" />
-                        </div>
-                      )}
-                      <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`rounded-2xl shadow-sm ${isOwn ? 'bg-[#DCF8C6] text-gray-900 rounded-tr-sm' : 'bg-white text-gray-900 rounded-tl-sm'} ${(audio || image) ? 'p-2' : 'px-3 py-2 max-w-[82%]'}`}>
-                          {audio ? (
-                            <AudioPlayer messageId={msgId} telefone={contato.telefone} fromMe={isOwn} isOwn={isOwn} />
-                          ) : image ? (
-                            <ImageMessage messageId={msgId} telefone={contato.telefone} fromMe={isOwn} localDataUrl={localImages[msg.timestamp]} />
-                          ) : (
-                            <p className="text-sm whitespace-pre-wrap break-words leading-snug">{msg.content}</p>
-                          )}
-                          <p className="text-[10px] text-gray-400 mt-0.5 text-right">{formatTime(msg.timestamp)}</p>
-                        </div>
-                      </div>
-                    </React.Fragment>
-                  )
-                })
-              })()}
-              <div ref={endRef} />
-            </div>
-            {pendingImage && (
-              <div className="flex-shrink-0 bg-gray-50 border-t border-gray-100 px-3 pt-2 pb-1 flex items-center gap-2">
-                <img src={pendingImage.dataUrl} alt="Preview" className="w-14 h-14 object-cover rounded-lg border border-gray-200" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-gray-700 truncate">{pendingImage.file.name}</p>
-                </div>
-                <button onClick={() => setPendingImage(null)} className="text-gray-400 hover:text-red-500 p-1"><X size={14} /></button>
-              </div>
-            )}
-            <form onSubmit={handleSend} className="flex-shrink-0 p-3 bg-white border-t border-gray-100 flex gap-2 items-center">
-              {!isRecording && (
-                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={sending}
-                  className="w-9 h-9 flex items-center justify-center rounded-xl text-gray-400 hover:text-primary hover:bg-primary/10 transition-colors disabled:opacity-40">
-                  <Paperclip size={17} />
-                </button>
-              )}
-              {!isRecording && (
-                <input value={msgText} onChange={e => setMsgText(e.target.value)}
-                  placeholder={pendingImage ? 'Legenda...' : 'Digite uma mensagem...'}
-                  className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-                />
-              )}
-              <AudioRecorder onSend={handleSendAudio} onRecordingChange={setIsRecording} disabled={sending} />
-              {!isRecording && (
-                <button type="submit" disabled={(!msgText.trim() && !pendingImage) || sending}
-                  className="bg-primary text-white rounded-xl px-3 py-2.5 hover:bg-primary-dark disabled:opacity-50 transition-colors">
-                  <Send size={15} />
-                </button>
-              )}
-            </form>
-          </>
-        )}
-
-        {/* Tab: Tarefas */}
-        {tab === 'tarefas' && (
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-y-auto p-4 space-y-2">
-              {tarefas.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-36 text-gray-400">
-                  <CheckSquare size={32} className="mb-2 opacity-30" />
-                  <p className="text-sm">Nenhuma tarefa</p>
-                </div>
-              ) : tarefas.map(t => (
-                <div key={t.id} className="flex items-start gap-3 bg-gray-50 hover:bg-gray-100 rounded-xl p-3 transition-colors">
-                  <button onClick={() => toggleTask(t)} className="mt-0.5 flex-shrink-0">
-                    {t.status === 'concluida' ? <CheckSquare size={18} className="text-green-500" /> : <Square size={18} className="text-gray-300" />}
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm font-medium ${t.status === 'concluida' ? 'line-through text-gray-400' : 'text-gray-800'}`}>{t.titulo}</p>
-                    {t.vencimento && <p className="text-xs text-gray-400 mt-0.5">{t.vencimento}</p>}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="flex-shrink-0 p-4 border-t border-gray-100">
-              {addingTask ? (
-                <div className="space-y-2">
-                  <input autoFocus value={newTitle} onChange={e => setNewTitle(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') createTask() }}
-                    placeholder="Título da tarefa"
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                  />
-                  <input type="date" value={newDate} onChange={e => setNewDate(e.target.value)}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                  />
-                  <div className="flex gap-2">
-                    <button onClick={createTask} disabled={!newTitle.trim()} className="flex-1 bg-primary text-white rounded-lg py-2 text-sm font-semibold disabled:opacity-50">Criar</button>
-                    <button onClick={() => setAddingTask(false)} className="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2 text-sm">Cancelar</button>
-                  </div>
-                </div>
-              ) : (
-                <button onClick={() => setAddingTask(true)}
-                  className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-gray-200 text-gray-400 hover:border-primary hover:text-primary rounded-xl py-3 text-sm font-medium transition-colors">
-                  <Plus size={16} />Nova tarefa
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Tab: Detalhes */}
-        {tab === 'detalhes' && (
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {[
-              { label: 'Nome', value: editNome, setter: setEditNome, type: 'text' },
-              { label: 'Email', value: editEmail, setter: setEditEmail, type: 'email' },
-              { label: 'Origem', value: editOrigem, setter: setEditOrigem, type: 'text' },
-            ].map(f => (
-              <div key={f.label}>
-                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">{f.label}</label>
-                <input type={f.type} value={f.value} onChange={e => f.setter(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" />
-              </div>
-            ))}
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Status</label>
-              <select value={editStatus} onChange={e => setEditStatus(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-white">
-                <option value="">Sem status</option>
-                {Object.entries(STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Etapa do Funil</label>
-              <select value={editEtapa} onChange={e => setEditEtapa(e.target.value)}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-white">
-                <option value="">Sem etapa</option>
-                {etapas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Observações</label>
-              <textarea value={editObs} onChange={e => setEditObs(e.target.value)} rows={5} placeholder="Notas sobre o contato..."
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none resize-none" />
-            </div>
-            <button onClick={saveDetails} disabled={saving}
-              className={`w-full rounded-lg py-2.5 text-sm font-semibold transition-all ${savedOk ? 'bg-green-500 text-white' : 'bg-primary text-white hover:bg-primary-dark disabled:opacity-50'}`}>
-              {savedOk ? '✓ Salvo!' : saving ? 'Salvando...' : 'Salvar alterações'}
-            </button>
-          </div>
-        )}
-      </div>
-    </>
-  )
-}
-
-// ── NovoContatoModal ──────────────────────────────────────────────────────────
-
-function NovoContatoModal({ etapas, onClose, onCreate }: {
-  etapas: EtapaFunil[]; onClose: () => void; onCreate: () => void
-}) {
-  const [form, setForm] = useState({ nome: '', telefone: '', email: '', status: '', etapa_funil_id: '' })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!form.telefone.trim()) { setError('Telefone é obrigatório'); return }
-    setSaving(true)
-    const { error: err } = await supabase.from('crm_contatos').insert({
-      nome: form.nome || null, telefone: form.telefone.trim(),
-      email: form.email || null, status: form.status || null,
-      etapa_funil_id: form.etapa_funil_id || null,
-    })
-    setSaving(false)
-    if (err) { setError(err.message); return }
-    onCreate()
-    onClose()
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
-        <div className="p-6">
-          <div className="flex items-center justify-between mb-5">
-            <h2 className="text-lg font-bold text-gray-900">Novo Contato</h2>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
-          </div>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Nome</label>
-              <input value={form.nome} onChange={e => setForm(f => ({...f, nome: e.target.value}))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20" placeholder="Nome completo" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Telefone *</label>
-              <input value={form.telefone} onChange={e => setForm(f => ({...f, telefone: e.target.value}))} required
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20" placeholder="+55 11 99999-9999" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-              <input type="email" value={form.email} onChange={e => setForm(f => ({...f, email: e.target.value}))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20" placeholder="email@exemplo.com" />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                <select value={form.status} onChange={e => setForm(f => ({...f, status: e.target.value}))}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-white">
-                  <option value="">—</option>
-                  {Object.entries(STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Etapa</label>
-                <select value={form.etapa_funil_id} onChange={e => setForm(f => ({...f, etapa_funil_id: e.target.value}))}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-white">
-                  <option value="">—</option>
-                  {etapas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
-                </select>
-              </div>
-            </div>
-            {error && <p className="text-red-500 text-sm">{error}</p>}
-            <div className="flex gap-3 pt-2">
-              <button type="submit" disabled={saving}
-                className="flex-1 bg-primary text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-primary-dark disabled:opacity-60">
-                {saving ? 'Criando...' : 'Criar Contato'}
-              </button>
-              <button type="button" onClick={onClose} className="flex-1 bg-gray-100 text-gray-600 rounded-lg py-2.5 text-sm font-medium hover:bg-gray-200">
-                Cancelar
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
+const PAGE = 50
+const statusColors: Record<string, string> = { novo: '#3B82F6', ativo: '#22C55E', negociando: '#F97316', fechado: '#8B5CF6', perdido: '#EF4444' }
 
 export default function ContatosPage() {
   const [contatos, setContatos] = useState<Contato[]>([])
   const [etapas, setEtapas] = useState<EtapaFunil[]>([])
-  const [busca, setBusca] = useState('')
-  const [filtroStatus, setFiltroStatus] = useState('')
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [pg, setPg] = useState(0)
+  const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState<Contato | null>(null)
-  const [novoOpen, setNovoOpen] = useState(false)
-  const [page, setPage] = useState(0)
-  const [hasMore, setHasMore] = useState(false)
-  const [loadingMore, setLoadingMore] = useState(false)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const [conversa, setConversa] = useState<Conversa | null>(null)
+  const [tarefas, setTarefas] = useState<Tarefa[]>([])
+  const [tab, setTab] = useState<'historico'|'tarefas'|'detalhes'>('historico')
+  const [showNovo, setShowNovo] = useState(false)
+  const [novo, setNovo] = useState({ nome: '', telefone: '', email: '', status: 'novo', etapa_funil_id: '' })
+  const [criando, setCriando] = useState(false)
+  const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [pendingImage, setPendingImage] = useState<string|null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
+  const [editNome, setEditNome] = useState('')
+  const [editEmail, setEditEmail] = useState('')
+  const [editStatus, setEditStatus] = useState('')
+  const [editEtapa, setEditEtapa] = useState('')
+  const [editObs, setEditObs] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [novaTarefa, setNovaTarefa] = useState('')
+  const [novaTarefaVenc, setNovaTarefaVenc] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+  const msgsEndRef = useRef<HTMLDivElement>(null)
+  const searchTimer = useRef<ReturnType<typeof setTimeout>|null>(null)
 
-  const loadPage = useCallback(async (p: number, search = '') => {
-    const from = p * 50, to = from + 49
-    let q = supabase.from('crm_contatos').select('*, etapa:etapas_funil(*)').order('atualizado_em', { ascending: false }).range(from, to)
-    if (search) q = q.ilike('nome', `%${search}%`)
-    if (filtroStatus) q = q.eq('status', filtroStatus)
-    const { data } = await q
-    if (!data) return
-    const filtered = (data as Contato[]).filter(c => !isGroupPhone(c.telefone))
-    if (p === 0) setContatos(filtered)
-    else setContatos(prev => {
-      const ids = new Set(prev.map(c => c.id))
-      return [...prev, ...filtered.filter(c => !ids.has(c.id))]
-    })
-    setHasMore(data.length === 50)
-    setPage(p + 1)
-  }, [filtroStatus])
-
-  useEffect(() => {
-    supabase.from('etapas_funil').select('*').order('ordem').then(({ data }) => { if (data) setEtapas(data as EtapaFunil[]) })
-    loadPage(0)
-  }, [loadPage])
-
-  // Debounced search
-  useEffect(() => {
-    clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => loadPage(0, busca), 300)
-    return () => clearTimeout(debounceRef.current)
-  }, [busca, loadPage])
-
-  async function loadMore() {
-    setLoadingMore(true)
-    await loadPage(page, busca)
-    setLoadingMore(false)
+  async function loadContatos(searchVal: string, statusVal: string, page: number) {
+    let q = supabase.from('crm_contatos').select('*', { count: 'exact' }).order('criado_em', { ascending: false })
+    if (searchVal) q = q.or(`nome.ilike.%${searchVal}%,telefone.ilike.%${searchVal}%`)
+    if (statusVal) q = q.eq('status', statusVal)
+    const { data, count } = await q.range(page * PAGE, page * PAGE + PAGE - 1)
+    if (data) {
+      if (page === 0) setContatos(data as Contato[])
+      else setContatos(prev => [...prev, ...(data as Contato[])])
+      setTotal(count ?? 0)
+      setPg(page)
+    }
   }
 
-  function handleUpdate(patch: Partial<Contato>) {
+  async function loadEtapas() {
+    const { data } = await supabase.from('etapas_funil').select('*').order('ordem')
+    if (data) setEtapas(data as EtapaFunil[])
+  }
+
+  useEffect(() => { loadContatos('', '', 0); loadEtapas() }, [])
+
+  function handleSearch(val: string) {
+    setSearch(val)
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    searchTimer.current = setTimeout(() => loadContatos(val, statusFilter, 0), 300)
+  }
+
+  function handleStatusFilter(val: string) {
+    setStatusFilter(val)
+    loadContatos(search, val, 0)
+  }
+
+  async function selectContato(c: Contato) {
+    setSelected(c)
+    setEditNome(c.nome ?? '')
+    setEditEmail(c.email ?? '')
+    setEditStatus(c.status ?? '')
+    setEditEtapa(c.etapa_funil_id ?? '')
+    setEditObs(c.observacoes ?? '')
+    setTab('historico')
+    const { data } = await supabase.from('conversas').select('*').eq('telefone', c.telefone).single()
+    setConversa(data as Conversa ?? null)
+    const { data: t } = await supabase.from('tarefas').select('*').eq('contato_id', c.id).order('criado_em', { ascending: false })
+    setTarefas(t as Tarefa[] ?? [])
+  }
+
+  useEffect(() => { msgsEndRef.current?.scrollIntoView() }, [conversa?.historico?.length])
+
+  async function handleSend(e: React.FormEvent) {
+    e.preventDefault()
+    if (!selected || (!text.trim() && !pendingImage)) return
+    setSending(true)
+    try {
+      if (pendingImage) { await sendImage(selected.telefone, pendingImage); setPendingImage(null) }
+      if (text.trim()) { await sendText(selected.telefone, text.trim()); setText('') }
+    } catch { alert('Erro ao enviar') }
+    setSending(false)
+  }
+
+  async function handleAudio(b64: string) { if (selected) await sendAudio(selected.telefone, b64) }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]; if (!f) return
+    const r = new FileReader(); r.onloadend = () => setPendingImage(r.result as string); r.readAsDataURL(f)
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault(); setIsDragging(false)
+    const f = e.dataTransfer.files[0]; if (!f?.type.startsWith('image/')) return
+    const r = new FileReader(); r.onloadend = () => setPendingImage(r.result as string); r.readAsDataURL(f)
+  }
+
+  async function saveDetails() {
     if (!selected) return
-    setContatos(prev => prev.map(c => c.id === selected.id ? { ...c, ...patch } : c))
-    setSelected(prev => prev ? { ...prev, ...patch } : null)
+    setSaving(true)
+    const { data } = await supabase.from('crm_contatos').update({ nome: editNome, email: editEmail, status: editStatus, etapa_funil_id: editEtapa || null, observacoes: editObs }).eq('id', selected.id).select().single()
+    if (data) {
+      const updated = data as Contato
+      setSelected(updated)
+      setContatos(prev => prev.map(c => c.id === updated.id ? updated : c))
+    }
+    setSaving(false)
   }
 
-  const statusFilters = ['', 'lead', 'qualificado', 'cliente', 'perdido']
-  const statusLabels: Record<string, string> = { '': 'Todos', lead: 'Lead', qualificado: 'Qualificado', cliente: 'Cliente', perdido: 'Perdido' }
+  async function addTarefa() {
+    if (!novaTarefa.trim() || !selected) return
+    const { data } = await supabase.from('tarefas').insert({ titulo: novaTarefa.trim(), contato_id: selected.id, status: 'pendente', vencimento: novaTarefaVenc || null }).select().single()
+    if (data) { setTarefas(prev => [data as Tarefa, ...prev]); setNovaTarefa(''); setNovaTarefaVenc('') }
+  }
+
+  async function toggleTarefa(t: Tarefa) {
+    const ns = t.status === 'pendente' ? 'concluida' : 'pendente'
+    await supabase.from('tarefas').update({ status: ns }).eq('id', t.id)
+    setTarefas(prev => prev.map(x => x.id === t.id ? { ...x, status: ns } : x))
+  }
+
+  async function criarContato() {
+    if (!novo.telefone.trim()) return
+    setCriando(true)
+    const { data } = await supabase.from('crm_contatos').insert({ nome: novo.nome || null, telefone: novo.telefone, email: novo.email || null, status: novo.status, etapa_funil_id: novo.etapa_funil_id || null }).select().single()
+    if (data) { setContatos(prev => [data as Contato, ...prev]); setShowNovo(false); setNovo({ nome: '', telefone: '', email: '', status: 'novo', etapa_funil_id: '' }) }
+    setCriando(false)
+  }
+
+  const useCallback_renderMsg = useCallback((msg: Mensagem) => {
+    const isOwn = msg.role === 'assistant'
+    const msgId = getMediaMsgId(msg)
+    return (
+      <div key={`${msg.timestamp}-${msg.role}`} className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+        <div className={`max-w-[75%] rounded-2xl px-3 py-2 ${isOwn ? 'bg-primary text-white rounded-tr-sm' : 'bg-white text-gray-900 rounded-tl-sm shadow-sm border border-gray-100'}`}>
+          {isAudioMsg(msg) && selected ? <AudioPlayer messageId={msgId} telefone={selected.telefone} fromMe={isOwn} isOwn={isOwn}/>
+            : isImageMsg(msg) && selected ? <ImageMessage messageId={msgId} telefone={selected.telefone} fromMe={isOwn}/>
+            : msg.media_type === 'document' ? <span className="text-sm">📄 Documento</span>
+            : <span className="text-sm leading-relaxed whitespace-pre-wrap break-words">{msg.content?.replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/,'')}</span>}
+          <p className={`text-[10px] mt-1 ${isOwn ? 'text-white/60 text-right' : 'text-gray-400'}`}>{msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : ''}</p>
+        </div>
+      </div>
+    )
+  }, [selected])
+
+  function groupByDate(msgs: Mensagem[]) {
+    const groups: { label: string; msgs: Mensagem[] }[] = []
+    msgs.forEach(msg => {
+      const label = getDateLabel(msg.timestamp)
+      const last = groups[groups.length - 1]
+      if (last?.label === label) last.msgs.push(msg)
+      else groups.push({ label, msgs: [msg] })
+    })
+    return groups
+  }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-6 pt-6 pb-4 flex-shrink-0 bg-white border-b border-gray-100">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-xl font-bold text-gray-900">Contatos</h1>
-          <button onClick={() => setNovoOpen(true)}
-            className="flex items-center gap-2 bg-primary text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-primary-dark transition-colors">
-            <Plus size={15} />NOVO CONTATO
-          </button>
+      <div className="px-6 py-4 border-b border-gray-200 bg-white flex items-center gap-4 flex-shrink-0">
+        <h1 className="text-lg font-semibold text-gray-900">Contatos</h1>
+        <div className="relative flex-1 max-w-xs">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+          <input value={search} onChange={e=>handleSearch(e.target.value)} placeholder="Buscar…"
+            className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-primary"/>
         </div>
-        <div className="flex gap-3 flex-wrap">
-          <div className="relative flex-1 min-w-48">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input value={busca} onChange={e => setBusca(e.target.value)}
-              placeholder="Buscar por nome, telefone ou email..."
-              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" />
-          </div>
-          <div className="flex gap-1">
-            {statusFilters.map(s => (
-              <button key={s} onClick={() => { setFiltroStatus(s); loadPage(0, busca) }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${filtroStatus === s ? 'bg-primary text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                {statusLabels[s]}
-              </button>
-            ))}
-          </div>
-        </div>
-        <p className="text-xs text-gray-400 mt-2">{contatos.length} contatos{hasMore ? '+' : ''}</p>
+        <select value={statusFilter} onChange={e=>handleStatusFilter(e.target.value)}
+          className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary">
+          <option value="">Todos status</option>
+          {['novo','ativo','negociando','fechado','perdido'].map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span className="text-xs text-gray-400">{total} contatos</span>
+        <button onClick={() => setShowNovo(true)}
+          className="ml-auto flex items-center gap-2 bg-primary text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-primary-dark">
+          <Plus size={16}/> Novo Contato
+        </button>
       </div>
 
-      {/* Table */}
-      <div className="flex-1 overflow-y-auto">
-        <table className="w-full">
-          <thead className="bg-gray-50 border-b border-gray-100 sticky top-0">
-            <tr>
-              <th className="text-left p-4 text-xs font-semibold text-gray-500 uppercase tracking-wide">Contato</th>
-              <th className="text-left p-4 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">Telefone</th>
-              <th className="text-left p-4 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">Email</th>
-              <th className="text-left p-4 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">Origem</th>
-              <th className="text-left p-4 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">Status</th>
-              <th className="text-left p-4 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden xl:table-cell">Etapa</th>
-              <th className="text-left p-4 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden xl:table-cell">Data</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {contatos.map(c => (
-              <tr key={c.id} onClick={() => setSelected(c)} className="hover:bg-gray-50 cursor-pointer transition-colors">
-                <td className="p-4">
-                  <div className="flex items-center gap-3">
-                    <ContactAvatar nome={c.nome} seed={c.telefone} size={36} fotoUrl={c.foto_url} />
-                    <div>
-                      <p className="text-sm font-semibold text-gray-900">{c.nome ?? 'Sem nome'}</p>
-                      <p className="text-xs text-gray-400 md:hidden">{formatPhone(c.telefone)}</p>
+      <div className="flex-1 overflow-hidden flex">
+        {/* Table */}
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <table className="w-full">
+              <thead><tr className="border-b border-gray-100">
+                {['','Nome','Telefone','Email','Status','Etapa','Criado em'].map((h,i) => (
+                  <th key={i} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {contatos.map(c => {
+                  const etapa = etapas.find(e => e.id === c.etapa_funil_id)
+                  return (
+                    <tr key={c.id} onClick={() => selectContato(c)}
+                      className={`border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors ${selected?.id === c.id ? 'bg-primary/5' : ''}`}>
+                      <td className="px-4 py-3">
+                        <input type="checkbox" className="rounded" onClick={e=>e.stopPropagation()}/>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <ContactAvatar nome={c.nome} telefone={c.telefone} fotoUrl={c.foto_url} size="sm"/>
+                          <span className="text-sm font-medium text-gray-900">{c.nome || '—'}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600">{formatPhone(c.telefone)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 truncate max-w-[140px]">{c.email || '—'}</td>
+                      <td className="px-4 py-3">
+                        {c.status && <span className="px-2 py-0.5 rounded-full text-xs font-medium text-white" style={{ backgroundColor: statusColors[c.status] ?? '#6B7280' }}>{c.status}</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        {etapa && <span className="px-2 py-0.5 rounded-full text-xs font-medium text-white" style={{ backgroundColor: etapa.cor }}>{etapa.nome}</span>}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-400">{formatDate(c.criado_em)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            {/* Pagination */}
+            <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between">
+              <button disabled={pg === 0} onClick={() => loadContatos(search, statusFilter, pg - 1)}
+                className="text-sm text-gray-500 hover:text-primary disabled:opacity-40">← Anterior</button>
+              <span className="text-xs text-gray-400">{pg * PAGE + 1}–{Math.min((pg + 1) * PAGE, total)} de {total}</span>
+              <button disabled={(pg + 1) * PAGE >= total} onClick={() => loadContatos(search, statusFilter, pg + 1)}
+                className="text-sm text-gray-500 hover:text-primary disabled:opacity-40">Próxima →</button>
+            </div>
+          </div>
+        </div>
+
+        {/* Side panel */}
+        {selected && (
+          <div className="w-[420px] flex-shrink-0 border-l border-gray-200 bg-white flex flex-col">
+            {/* Header */}
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3 flex-shrink-0">
+              <ContactAvatar nome={selected.nome} telefone={selected.telefone} fotoUrl={selected.foto_url} size="md"/>
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-gray-900 truncate">{selected.nome || formatPhone(selected.telefone)}</p>
+                <p className="text-xs text-gray-400">{formatPhone(selected.telefone)}</p>
+                {selected.status && <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-medium text-white" style={{ backgroundColor: statusColors[selected.status] ?? '#6B7280' }}>{selected.status}</span>}
+              </div>
+              <a href={`https://wa.me/${selected.telefone.replace(/\D/g,'')}`} target="_blank" rel="noopener noreferrer" className="text-whatsapp"><ExternalLink size={14}/></a>
+              <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
+            </div>
+            {/* Tabs */}
+            <div className="flex border-b border-gray-100 flex-shrink-0">
+              {(['historico','tarefas','detalhes'] as const).map(t => (
+                <button key={t} onClick={() => setTab(t)}
+                  className={`flex-1 py-2.5 text-sm font-medium transition-colors ${tab===t ? 'text-primary border-b-2 border-primary' : 'text-gray-500 hover:text-gray-700'}`}>
+                  {t === 'historico' ? 'Histórico' : t === 'tarefas' ? 'Tarefas' : 'Detalhes'}
+                </button>
+              ))}
+            </div>
+
+            {tab === 'historico' && (
+              <>
+                <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3"
+                  onDragOver={e=>{e.preventDefault();setIsDragging(true)}} onDragLeave={()=>setIsDragging(false)} onDrop={handleDrop}
+                  style={{ backgroundColor: isDragging ? 'rgba(37,99,235,0.04)' : undefined }}>
+                  {groupByDate(conversa?.historico ?? []).map(g => (
+                    <div key={g.label}>
+                      <div className="flex justify-center mb-2"><span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{g.label}</span></div>
+                      <div className="space-y-2">{g.msgs.map(useCallback_renderMsg)}</div>
                     </div>
-                  </div>
-                </td>
-                <td className="p-4 hidden md:table-cell text-sm text-gray-600">{formatPhone(c.telefone)}</td>
-                <td className="p-4 hidden lg:table-cell text-sm text-gray-500 truncate max-w-[140px]">{c.email ?? '—'}</td>
-                <td className="p-4 hidden lg:table-cell text-sm text-gray-500 capitalize">{c.origem ?? '—'}</td>
-                <td className="p-4 hidden lg:table-cell">
-                  {c.status && <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium capitalize ${STATUS_COLORS[c.status] ?? 'bg-gray-100 text-gray-600'}`}>{c.status}</span>}
-                </td>
-                <td className="p-4 hidden xl:table-cell">
-                  {c.etapa && (
-                    <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium text-white" style={{ backgroundColor: c.etapa.cor }}>
-                      {c.etapa.nome}
-                    </span>
+                  ))}
+                  {!conversa && <p className="text-center text-sm text-gray-400 mt-8">Sem histórico de conversa</p>}
+                  <div ref={msgsEndRef}/>
+                </div>
+                <div className="px-3 py-3 border-t border-gray-100 flex-shrink-0">
+                  {pendingImage && (
+                    <div className="relative inline-block mb-2">
+                      <img src={pendingImage} alt="" className="h-16 w-16 object-cover rounded-lg border"/>
+                      <button onClick={()=>setPendingImage(null)} className="absolute -top-1 -right-1 w-4 h-4 bg-gray-700 text-white rounded-full flex items-center justify-center"><X size={8}/></button>
+                    </div>
                   )}
-                </td>
-                <td className="p-4 hidden xl:table-cell text-sm text-gray-400">{formatDate(c.atualizado_em)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {contatos.length === 0 && <div className="p-12 text-center text-gray-400 text-sm">Nenhum contato encontrado</div>}
-        {hasMore && (
-          <div className="p-4 text-center">
-            <button onClick={loadMore} disabled={loadingMore} className="text-sm text-primary hover:underline disabled:opacity-50">
-              {loadingMore ? 'Carregando...' : 'Carregar mais'}
-            </button>
+                  <form onSubmit={handleSend} className="flex items-center gap-2">
+                    <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange}/>
+                    <button type="button" onClick={()=>fileRef.current?.click()} className="text-gray-400 hover:text-primary p-1"><Paperclip size={16}/></button>
+                    <input value={text} onChange={e=>setText(e.target.value)} placeholder="Mensagem…" disabled={isRecording||sending}
+                      className="flex-1 bg-gray-100 rounded-xl px-3 py-2 text-sm focus:outline-none"/>
+                    <AudioRecorder onSend={handleAudio} onRecordingChange={setIsRecording} disabled={sending}/>
+                    <button type="submit" disabled={sending||(!text.trim()&&!pendingImage)}
+                      className="w-9 h-9 bg-primary text-white rounded-xl flex items-center justify-center disabled:opacity-40">
+                      {sending ? <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"/> : <Send size={14}/>}
+                    </button>
+                  </form>
+                </div>
+              </>
+            )}
+
+            {tab === 'tarefas' && (
+              <div className="flex-1 overflow-y-auto p-4">
+                <div className="space-y-2 mb-4">
+                  <input value={novaTarefa} onChange={e=>setNovaTarefa(e.target.value)} placeholder="Nova tarefa…"
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-primary"/>
+                  <input type="datetime-local" value={novaTarefaVenc} onChange={e=>setNovaTarefaVenc(e.target.value)}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-primary"/>
+                  <button onClick={addTarefa} disabled={!novaTarefa.trim()}
+                    className="w-full bg-primary text-white rounded-xl py-2 text-sm font-medium hover:bg-primary-dark disabled:opacity-50">
+                    Adicionar
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {tarefas.map(t => (
+                    <div key={t.id} className="flex items-start gap-2 p-3 bg-gray-50 rounded-xl">
+                      <button onClick={()=>toggleTarefa(t)} className={`mt-0.5 flex-shrink-0 ${t.status==='concluida' ? 'text-green-500' : 'text-gray-300'}`}>
+                        <CheckSquare size={14}/>
+                      </button>
+                      <div className="flex-1">
+                        <p className={`text-sm ${t.status==='concluida' ? 'line-through text-gray-400' : 'text-gray-900'}`}>{t.titulo}</p>
+                        {t.vencimento && <p className="text-xs text-gray-400 mt-0.5">{new Date(t.vencimento).toLocaleDateString('pt-BR')}</p>}
+                      </div>
+                    </div>
+                  ))}
+                  {tarefas.length === 0 && <p className="text-center text-sm text-gray-400">Nenhuma tarefa</p>}
+                </div>
+              </div>
+            )}
+
+            {tab === 'detalhes' && (
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {[
+                  { label: 'Nome', value: editNome, set: setEditNome, type: 'text' },
+                  { label: 'Email', value: editEmail, set: setEditEmail, type: 'email' },
+                ].map(f => (
+                  <div key={f.label}>
+                    <label className="text-xs font-medium text-gray-500 block mb-1">{f.label}</label>
+                    <input type={f.type} value={f.value} onChange={e=>f.set(e.target.value)}
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-primary"/>
+                  </div>
+                ))}
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">Status</label>
+                  <select value={editStatus} onChange={e=>setEditStatus(e.target.value)}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-primary">
+                    {['','novo','ativo','negociando','fechado','perdido'].map(s => <option key={s} value={s}>{s || '—'}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">Etapa</label>
+                  <select value={editEtapa} onChange={e=>setEditEtapa(e.target.value)}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-primary">
+                    <option value="">Sem etapa</option>
+                    {etapas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1">Observações</label>
+                  <textarea value={editObs} onChange={e=>setEditObs(e.target.value)} rows={4}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-primary resize-none"/>
+                </div>
+                <button onClick={saveDetails} disabled={saving}
+                  className="w-full bg-primary text-white rounded-xl py-2.5 text-sm font-medium hover:bg-primary-dark disabled:opacity-60">
+                  {saving ? 'Salvando…' : 'Salvar'}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Side panel */}
-      {selected && (
-        <ContactSidePanel contato={selected} etapas={etapas} onClose={() => setSelected(null)} onUpdate={handleUpdate} />
-      )}
-
       {/* Novo contato modal */}
-      {novoOpen && (
-        <NovoContatoModal etapas={etapas} onClose={() => setNovoOpen(false)} onCreate={() => loadPage(0, busca)} />
+      {showNovo && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-gray-900">Novo Contato</h3>
+              <button onClick={() => setShowNovo(false)} className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
+            </div>
+            <div className="space-y-3">
+              <input value={novo.nome} onChange={e=>setNovo(p=>({...p,nome:e.target.value}))} placeholder="Nome"
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary"/>
+              <input value={novo.telefone} onChange={e=>setNovo(p=>({...p,telefone:e.target.value}))} placeholder="Telefone *" required
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary"/>
+              <input type="email" value={novo.email} onChange={e=>setNovo(p=>({...p,email:e.target.value}))} placeholder="Email"
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary"/>
+              <select value={novo.status} onChange={e=>setNovo(p=>({...p,status:e.target.value}))}
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary">
+                {['novo','ativo','negociando','fechado','perdido'].map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <select value={novo.etapa_funil_id} onChange={e=>setNovo(p=>({...p,etapa_funil_id:e.target.value}))}
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary">
+                <option value="">Sem etapa</option>
+                {etapas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <button onClick={() => setShowNovo(false)} className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium">Cancelar</button>
+              <button onClick={criarContato} disabled={criando || !novo.telefone.trim()}
+                className="flex-1 bg-primary text-white rounded-xl py-2.5 text-sm font-medium hover:bg-primary-dark disabled:opacity-60">
+                {criando ? 'Criando…' : 'Criar'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

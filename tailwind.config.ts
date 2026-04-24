@@ -14,6 +14,9 @@ const config: Config = {
         surface: '#F4F5F7',
         border: '#E5E7EB',
       },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+      },
     },
   },
   plugins: [],

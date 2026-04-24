@@ -3,16 +3,21 @@ import { ptBR } from 'date-fns/locale'
 
 export function formatPhone(tel: string): string {
   const d = tel.replace(/\D/g, '')
-  if (d.startsWith('120363')) return 'Grupo'
-  if (d.length > 13) {
-    const last11 = d.slice(-11)
-    return `+55 (${last11.slice(0,2)}) ${last11.slice(2,7)}-${last11.slice(7)}`
-  }
-  if (d.length === 13) return `+${d.slice(0,2)} (${d.slice(2,4)}) ${d.slice(4,9)}-${d.slice(9)}`
-  if (d.length === 12) return `+${d.slice(0,2)} (${d.slice(2,4)}) ${d.slice(4,8)}-${d.slice(8)}`
-  if (d.length === 11) return `(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`
-  if (d.length === 10) return `(${d.slice(0,2)}) ${d.slice(2,6)}-${d.slice(6)}`
+  const n = d.length > 13 ? d.slice(-11) : d.length === 13 ? d.slice(2) : d
+  if (n.length === 11) return `(${n.slice(0,2)}) ${n.slice(2,7)}-${n.slice(7)}`
+  if (n.length === 10) return `(${n.slice(0,2)}) ${n.slice(2,6)}-${n.slice(6)}`
   return tel
+}
+
+export function getAvatarColor(str: string): string {
+  const colors = ['#6366F1','#8B5CF6','#EC4899','#EF4444','#F97316','#EAB308','#22C55E','#14B8A6','#3B82F6','#06B6D4']
+  let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0
+  return colors[h % colors.length]
+}
+
+export function getInitials(nome: string | null | undefined): string {
+  if (!nome?.trim()) return '?'
+  return nome.trim().split(/\s+/).slice(0,2).map(w => w[0].toUpperCase()).join('')
 }
 
 export function formatDate(ts: string): string {
@@ -24,27 +29,12 @@ export function formatDate(ts: string): string {
   } catch { return '' }
 }
 
-export function formatDateFull(ts: string): string {
-  try { return format(parseISO(ts), "dd 'de' MMMM 'de' yyyy", { locale: ptBR }) } catch { return '' }
-}
-
-export function formatTime(ts: string): string {
-  try { return format(parseISO(ts), 'HH:mm') } catch { return '' }
-}
-
 export function formatDateTime(ts: string): string {
-  try { return format(parseISO(ts), 'dd/MM/yyyy HH:mm', { locale: ptBR }) } catch { return '' }
+  try { return format(parseISO(ts), 'dd/MM HH:mm') } catch { return '' }
 }
 
-export function isGroupPhone(tel: string): boolean {
-  return tel.replace(/\D/g, '').startsWith('120363')
-}
-
-export function getAvatarColor(seed: string): string {
-  const colors = ['#6366F1','#8B5CF6','#EC4899','#EF4444','#F97316','#EAB308','#22C55E','#14B8A6','#3B82F6','#06B6D4']
-  let h = 0
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
-  return colors[h % colors.length]
+export function formatFullDate(ts: string): string {
+  try { return format(parseISO(ts), "dd 'de' MMMM", { locale: ptBR }) } catch { return '' }
 }
 
 export function getDateLabel(ts: string): string {
@@ -56,7 +46,6 @@ export function getDateLabel(ts: string): string {
   } catch { return '' }
 }
 
-export function getInitials(name: string | null): string {
-  if (!name) return '?'
-  return name.split(' ').filter(Boolean).slice(0,2).map(w => w[0].toUpperCase()).join('')
+export function isGroupPhone(tel: string): boolean {
+  return tel.replace(/\D/g, '').startsWith('120363')
 }

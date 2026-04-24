@@ -1,253 +1,178 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { LogOut, Wifi, WifiOff, Users, MessageSquare, CheckSquare, Database } from 'lucide-react'
 
-const BASE = 'https://evolution-evolution-api.ojjpm7.easypanel.host'
-const KEY = '429683C4C977415CAAFCCE10F7D57E11'
-const INST = 'Teste'
+type Tab = 'perfil' | 'integracao' | 'sistema'
 
 export default function ConfiguracoesPage() {
   const router = useRouter()
+  const [tab, setTab] = useState<Tab>('perfil')
   const [email, setEmail] = useState('')
-  const [tab, setTab] = useState<'perfil' | 'integracao' | 'sistema'>('perfil')
-
-  // Evolution connection
-  const [connStatus, setConnStatus] = useState<'idle' | 'loading' | 'connected' | 'disconnected'>('idle')
-
-  // System stats
-  const [stats, setStats] = useState<{ contatos: number; conversas: number; tarefas: number } | null>(null)
+  const [connStatus, setConnStatus] = useState<'idle'|'testing'|'connected'|'error'>('idle')
+  const [stats, setStats] = useState({ contatos: 0, conversas: 0, tarefas: 0 })
   const [loadingStats, setLoadingStats] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) { router.push('/login'); return }
-      setEmail(session.user.email ?? '')
+      if (session?.user.email) setEmail(session.user.email)
     })
-  }, [router])
+  }, [])
+
+  useEffect(() => {
+    if (tab === 'sistema') loadStats()
+  }, [tab])
+
+  async function loadStats() {
+    setLoadingStats(true)
+    const [{ count: c }, { count: conv }, { count: t }] = await Promise.all([
+      supabase.from('crm_contatos').select('*', { count: 'exact', head: true }),
+      supabase.from('conversas').select('*', { count: 'exact', head: true }),
+      supabase.from('tarefas').select('*', { count: 'exact', head: true }),
+    ])
+    setStats({ contatos: c ?? 0, conversas: conv ?? 0, tarefas: t ?? 0 })
+    setLoadingStats(false)
+  }
+
+  async function testConnection() {
+    setConnStatus('testing')
+    try {
+      const r = await fetch('https://evolution-evolution-api.ojjpm7.easypanel.host/instance/connectionState/Teste', {
+        headers: { apikey: '429683C4C977415CAAFCCE10F7D57E11' }
+      })
+      if (r.ok) {
+        const d = await r.json()
+        setConnStatus(d.instance?.state === 'open' ? 'connected' : 'error')
+      } else setConnStatus('error')
+    } catch { setConnStatus('error') }
+  }
 
   async function handleLogout() {
     await supabase.auth.signOut()
     router.push('/login')
   }
 
-  async function testarConexao() {
-    setConnStatus('loading')
-    try {
-      const r = await fetch(`${BASE}/instance/connectionState/${INST}`, {
-        headers: { apikey: KEY },
-      })
-      if (!r.ok) { setConnStatus('disconnected'); return }
-      const d = await r.json()
-      const state = d?.instance?.state ?? d?.state ?? ''
-      setConnStatus(state === 'open' ? 'connected' : 'disconnected')
-    } catch {
-      setConnStatus('disconnected')
-    }
-  }
-
-  async function loadStats() {
-    setLoadingStats(true)
-    const [{ count: c }, { count: cv }, { count: t }] = await Promise.all([
-      supabase.from('crm_contatos').select('*', { count: 'exact', head: true }),
-      supabase.from('conversas').select('*', { count: 'exact', head: true }),
-      supabase.from('tarefas').select('*', { count: 'exact', head: true }),
-    ])
-    setStats({ contatos: c ?? 0, conversas: cv ?? 0, tarefas: t ?? 0 })
-    setLoadingStats(false)
-  }
-
-  useEffect(() => {
-    if (tab === 'sistema') loadStats()
-  }, [tab])
-
-  const initials = email?.[0]?.toUpperCase() ?? 'U'
+  const getInitial = (e: string) => e?.[0]?.toUpperCase() || 'U'
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-2xl mx-auto p-6">
-        {/* Header */}
-        <div className="mb-6">
-          <h1 className="text-xl font-bold text-gray-900">Configurações</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Gerencie sua conta e integrações</p>
-        </div>
+    <div className="flex flex-col h-full overflow-y-auto">
+      <div className="px-6 py-4 border-b border-gray-200 bg-white flex-shrink-0">
+        <h1 className="text-lg font-semibold text-gray-900">Configurações</h1>
+      </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 border-b border-gray-200 mb-6">
-          {(['perfil', 'integracao', 'sistema'] as const).map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors capitalize ${
-                tab === t ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
+      <div className="flex flex-1">
+        {/* Side tabs */}
+        <div className="w-48 border-r border-gray-200 bg-white p-3 flex-shrink-0">
+          {(['perfil','integracao','sistema'] as Tab[]).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm font-medium mb-1 transition-colors ${tab===t ? 'bg-primary/10 text-primary' : 'text-gray-600 hover:bg-gray-50'}`}>
               {t === 'perfil' ? 'Perfil' : t === 'integracao' ? 'Integração' : 'Sistema'}
             </button>
           ))}
         </div>
 
-        {/* ── Perfil ── */}
-        {tab === 'perfil' && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+        {/* Content */}
+        <div className="flex-1 p-6">
+          {tab === 'perfil' && (
+            <div className="max-w-md">
+              <h2 className="text-base font-semibold text-gray-900 mb-6">Perfil</h2>
               <div className="flex items-center gap-4 mb-6">
                 <div className="w-16 h-16 rounded-full bg-primary flex items-center justify-center flex-shrink-0">
-                  <span className="text-white text-2xl font-bold">{initials}</span>
+                  <span className="text-white text-2xl font-bold">{getInitial(email)}</span>
                 </div>
                 <div>
-                  <p className="text-base font-semibold text-gray-900">{email}</p>
+                  <p className="font-medium text-gray-900">{email}</p>
                   <p className="text-sm text-gray-500">Administrador</p>
                 </div>
               </div>
+              <div className="bg-gray-50 rounded-xl p-4 mb-4">
+                <p className="text-sm text-gray-600"><strong>Email:</strong> {email}</p>
+                <p className="text-sm text-gray-600 mt-1"><strong>Função:</strong> Administrador</p>
+              </div>
+              <button onClick={handleLogout}
+                className="w-full border border-red-200 text-red-600 rounded-xl py-2.5 text-sm font-medium hover:bg-red-50 transition-colors">
+                Sair da conta
+              </button>
+            </div>
+          )}
 
+          {tab === 'integracao' && (
+            <div className="max-w-md">
+              <h2 className="text-base font-semibold text-gray-900 mb-6">Evolution API</h2>
               <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                  <input
-                    value={email} readOnly
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 text-gray-500 cursor-not-allowed"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">Para alterar o email, contacte o suporte.</p>
+                <div className="bg-gray-50 rounded-xl p-4">
+                  <label className="text-xs font-semibold text-gray-500 uppercase block mb-1">URL</label>
+                  <p className="text-sm text-gray-800 font-mono">https://evolution-evolution-api.ojjpm7.easypanel.host</p>
                 </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-xl border border-red-100 shadow-sm p-6">
-              <h3 className="text-sm font-semibold text-gray-900 mb-1">Sair da conta</h3>
-              <p className="text-sm text-gray-500 mb-4">Você será redirecionado para a página de login.</p>
-              <button
-                onClick={handleLogout}
-                className="flex items-center gap-2 bg-red-50 text-red-600 border border-red-200 rounded-lg px-4 py-2.5 text-sm font-medium hover:bg-red-100 transition-colors"
-              >
-                <LogOut size={16} />
-                Sair
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Integração ── */}
-        {tab === 'integracao' && (
-          <div className="space-y-4">
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-              <div className="flex items-center gap-3 mb-5">
-                <div className="w-10 h-10 rounded-xl bg-whatsapp/10 flex items-center justify-center">
-                  <MessageSquare size={20} className="text-whatsapp" />
+                <div className="bg-gray-50 rounded-xl p-4">
+                  <label className="text-xs font-semibold text-gray-500 uppercase block mb-1">Instância</label>
+                  <p className="text-sm text-gray-800 font-mono">Teste</p>
                 </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900">Evolution API</h3>
-                  <p className="text-xs text-gray-500">WhatsApp via Evolution API</p>
+                <div className="bg-gray-50 rounded-xl p-4">
+                  <label className="text-xs font-semibold text-gray-500 uppercase block mb-1">Supabase URL</label>
+                  <p className="text-sm text-gray-800 font-mono truncate">https://tsluxdsckwzvcnjwzelu.supabase.co</p>
                 </div>
-                <div className="ml-auto">
-                  {connStatus === 'connected' && (
-                    <span className="flex items-center gap-1.5 text-xs font-semibold text-green-600 bg-green-50 px-2.5 py-1 rounded-full">
-                      <Wifi size={12} />Conectado
+                <button onClick={testConnection} disabled={connStatus === 'testing'}
+                  className="w-full bg-primary text-white rounded-xl py-2.5 text-sm font-medium hover:bg-primary-dark disabled:opacity-60 transition-colors">
+                  {connStatus === 'testing' ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/>Testando…
                     </span>
-                  )}
-                  {connStatus === 'disconnected' && (
-                    <span className="flex items-center gap-1.5 text-xs font-semibold text-red-600 bg-red-50 px-2.5 py-1 rounded-full">
-                      <WifiOff size={12} />Desconectado
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">URL da API</label>
-                  <input readOnly value={BASE}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 text-gray-500 font-mono cursor-not-allowed" />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Instância</label>
-                  <input readOnly value={INST}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 text-gray-600 cursor-not-allowed" />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">API Key</label>
-                  <input readOnly value={`${KEY.slice(0, 8)}${'•'.repeat(24)}`}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 text-gray-500 font-mono cursor-not-allowed" />
-                </div>
-              </div>
-
-              <button
-                onClick={testarConexao}
-                disabled={connStatus === 'loading'}
-                className="mt-4 flex items-center gap-2 bg-primary text-white rounded-lg px-4 py-2.5 text-sm font-medium hover:bg-primary-dark transition-colors disabled:opacity-60"
-              >
-                {connStatus === 'loading' ? (
-                  <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Testando…</>
-                ) : (
-                  <><Wifi size={16} />Testar Conexão</>
-                )}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Sistema ── */}
-        {tab === 'sistema' && (
-          <div className="space-y-4">
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-                  <Database size={16} className="text-gray-400" />
-                  Estatísticas do sistema
-                </h3>
-                <button onClick={loadStats} disabled={loadingStats}
-                  className="text-xs text-primary hover:underline disabled:opacity-60">
-                  {loadingStats ? 'Carregando…' : 'Atualizar'}
+                  ) : 'Testar conexão'}
                 </button>
+                {connStatus === 'connected' && (
+                  <div className="flex items-center gap-2 text-green-600 bg-green-50 rounded-xl px-4 py-3">
+                    <div className="w-2 h-2 rounded-full bg-green-500"/>
+                    <span className="text-sm font-medium">Conectado</span>
+                  </div>
+                )}
+                {connStatus === 'error' && (
+                  <div className="flex items-center gap-2 text-red-600 bg-red-50 rounded-xl px-4 py-3">
+                    <div className="w-2 h-2 rounded-full bg-red-500"/>
+                    <span className="text-sm font-medium">Desconectado</span>
+                  </div>
+                )}
               </div>
+            </div>
+          )}
 
+          {tab === 'sistema' && (
+            <div className="max-w-lg">
+              <h2 className="text-base font-semibold text-gray-900 mb-6">Sistema</h2>
               {loadingStats ? (
-                <div className="grid grid-cols-3 gap-4">
-                  {[0, 1, 2].map(i => (
-                    <div key={i} className="h-20 bg-gray-100 rounded-lg animate-pulse" />
-                  ))}
-                </div>
-              ) : stats ? (
-                <div className="grid grid-cols-3 gap-4">
+                <div className="text-sm text-gray-400">Carregando…</div>
+              ) : (
+                <div className="grid grid-cols-3 gap-4 mb-6">
                   {[
-                    { label: 'Contatos', value: stats.contatos, icon: Users, color: 'text-blue-500', bg: 'bg-blue-50' },
-                    { label: 'Conversas', value: stats.conversas, icon: MessageSquare, color: 'text-green-500', bg: 'bg-green-50' },
-                    { label: 'Tarefas', value: stats.tarefas, icon: CheckSquare, color: 'text-purple-500', bg: 'bg-purple-50' },
-                  ].map(({ label, value, icon: Icon, color, bg }) => (
-                    <div key={label} className={`${bg} rounded-xl p-4`}>
-                      <Icon size={20} className={`${color} mb-2`} />
-                      <p className="text-2xl font-bold text-gray-900">{value.toLocaleString('pt-BR')}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+                    { label: 'Contatos', value: stats.contatos, icon: '👥' },
+                    { label: 'Conversas', value: stats.conversas, icon: '💬' },
+                    { label: 'Tarefas', value: stats.tarefas, icon: '✅' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 text-center">
+                      <div className="text-2xl mb-1">{s.icon}</div>
+                      <p className="text-2xl font-bold text-gray-900">{s.value}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">{s.label}</p>
                     </div>
                   ))}
                 </div>
-              ) : null}
-            </div>
-
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-              <h3 className="text-sm font-semibold text-gray-900 mb-3">Versão do sistema</h3>
-              <div className="space-y-2 text-sm text-gray-600">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Aplicação</span>
-                  <span className="font-medium">Sync CRM v2.0</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Framework</span>
-                  <span className="font-medium">Next.js 14</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Database</span>
-                  <span className="font-medium">Supabase (PostgreSQL)</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">WhatsApp</span>
-                  <span className="font-medium">Evolution API</span>
-                </div>
+              )}
+              <div className="bg-gray-50 rounded-xl p-4 space-y-2">
+                <h3 className="text-sm font-semibold text-gray-700 mb-3">Tecnologias</h3>
+                {[
+                  { label: 'Framework', value: 'Next.js 14' },
+                  { label: 'Banco de dados', value: 'Supabase (PostgreSQL)' },
+                  { label: 'Mensageria', value: 'Evolution API (WhatsApp)' },
+                  { label: 'IA', value: 'Claude Sonnet 4.6' },
+                ].map(i => (
+                  <div key={i.label} className="flex justify-between text-sm">
+                    <span className="text-gray-500">{i.label}</span>
+                    <span className="text-gray-800 font-medium">{i.value}</span>
+                  </div>
+                ))}
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   )

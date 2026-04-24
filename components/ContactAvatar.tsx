@@ -2,27 +2,29 @@
 import { useState } from 'react'
 import { getAvatarColor, getInitials } from '@/lib/utils'
 
-interface Props { nome?: string | null; seed: string; size?: number; fotoUrl?: string | null }
+interface Props { nome?: string | null; telefone?: string; size?: 'sm'|'md'|'lg'|number; fotoUrl?: string | null; className?: string }
 
-export default function ContactAvatar({ nome, seed, size = 36, fotoUrl }: Props) {
-  const [imgError, setImgError] = useState(false)
-  const initials = getInitials(nome ?? seed)
+const SIZES = { sm: 28, md: 40, lg: 64 }
+
+export default function ContactAvatar({ nome, telefone, size = 'md', fotoUrl, className = '' }: Props) {
+  const [imgErr, setImgErr] = useState(false)
+  const px = typeof size === 'number' ? size : SIZES[size]
+  const seed = telefone ?? nome ?? '?'
   const color = getAvatarColor(seed)
-  const px = size
-  const fontSize = size < 32 ? 10 : size < 48 ? 13 : 18
+  const initials = getInitials(nome)
+  const fontSize = px < 32 ? 10 : px < 48 ? 13 : 20
 
-  if (fotoUrl && !imgError) {
+  if (fotoUrl && !imgErr) {
     return (
-      <img src={fotoUrl} alt={nome ?? ''} referrerPolicy="no-referrer"
-        onError={() => setImgError(true)}
-        style={{ width: px, height: px, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
-      />
+      <img src={fotoUrl} alt={nome ?? ''} referrerPolicy="no-referrer" onError={() => setImgErr(true)}
+        className={`rounded-full object-cover flex-shrink-0 ${className}`}
+        style={{ width: px, height: px }} />
     )
   }
-
   return (
-    <div style={{ width: px, height: px, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-      <span style={{ color: '#fff', fontSize, fontWeight: 600, lineHeight: 1 }}>{initials || '?'}</span>
+    <div className={`rounded-full flex items-center justify-center flex-shrink-0 ${className}`}
+      style={{ width: px, height: px, backgroundColor: color }}>
+      <span style={{ color: '#fff', fontSize, fontWeight: 600, lineHeight: 1, userSelect: 'none' }}>{initials}</span>
     </div>
   )
 }
