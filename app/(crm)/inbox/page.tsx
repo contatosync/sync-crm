@@ -93,9 +93,14 @@ export default function InboxPage() {
   const [novaTarefa, setNovaTarefa] = useState('')
   const [showTarefaInput, setShowTarefaInput] = useState(false)
 
-  // Pagination
+  // Pagination / totals
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
+  const [totalCount, setTotalCount] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+
+  // Infinite-scroll sentinel
+  const sentinelRef = useRef<HTMLDivElement>(null)
 
   // Unread tracking (mirrors layout.tsx localStorage schema)
   const [lastSeen, setLastSeen] = useState<Record<string, number>>({})
@@ -112,30 +117,45 @@ export default function InboxPage() {
     } catch { /* noop */ }
   }, [])
 
-  /* ── Load conversations ── */
+  /* ── Load conversations + batch-fetch contacts ── */
   const loadConversas = useCallback(async (pg = 0) => {
+    if (pg > 0) setLoadingMore(true)
     const from = pg * PAGE
     const { data, count } = await supabase
       .from('conversas')
       .select('*', { count: 'exact' })
       .order('atualizado_em', { ascending: false })
       .range(from, from + PAGE - 1)
-    if (data) {
-      if (pg === 0) setConversas(data as Conversa[])
-      else setConversas(prev => [...prev, ...(data as Conversa[])])
-      setHasMore((count ?? 0) > from + PAGE)
-      setPage(pg)
-    }
-  }, [])
 
-  /* ── Load contacts ── */
-  const loadContatos = useCallback(async () => {
-    const { data } = await supabase.from('crm_contatos').select('*').range(0, 999)
     if (data) {
-      const map: Record<string, Contato> = {}
-      ;(data as Contato[]).forEach(c => { map[c.telefone] = c })
-      setContatos(map)
+      const convs = data as Conversa[]
+      if (pg === 0) setConversas(convs)
+      else setConversas(prev => {
+        // Deduplicate by telefone
+        const existing = new Set(prev.map(c => c.telefone))
+        return [...prev, ...convs.filter(c => !existing.has(c.telefone))]
+      })
+      setHasMore((count ?? 0) > from + PAGE)
+      setTotalCount(count ?? 0)
+      setPage(pg)
+
+      // Batch-fetch crm_contatos for this page of phones
+      if (convs.length > 0) {
+        const phones = convs.map(c => c.telefone)
+        const { data: ctData } = await supabase
+          .from('crm_contatos')
+          .select('*')
+          .in('telefone', phones)
+        if (ctData) {
+          setContatos(prev => {
+            const next = { ...prev }
+            ;(ctData as Contato[]).forEach(c => { next[c.telefone] = c })
+            return next
+          })
+        }
+      }
     }
+    if (pg > 0) setLoadingMore(false)
   }, [])
 
   /* ── Load stages ── */
@@ -156,7 +176,6 @@ export default function InboxPage() {
   /* ── Initial setup + realtime ── */
   useEffect(() => {
     loadConversas()
-    loadContatos()
     loadEtapas()
 
     const ch = supabase.channel('inbox-rt')
@@ -174,7 +193,20 @@ export default function InboxPage() {
       .subscribe()
 
     return () => { supabase.removeChannel(ch) }
-  }, [loadConversas, loadContatos])
+  }, [loadConversas])
+
+  /* ── Infinite scroll via IntersectionObserver ── */
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel) return
+    const obs = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && hasMore && !loadingMore) {
+        loadConversas(page + 1)
+      }
+    }, { threshold: 0.1 })
+    obs.observe(sentinel)
+    return () => obs.disconnect()
+  }, [hasMore, loadingMore, page, loadConversas])
 
   /* ── Auto-scroll to bottom ── */
   useEffect(() => {
@@ -210,13 +242,11 @@ export default function InboxPage() {
     return seen ? new Date(conv.atualizado_em).getTime() > seen : true
   }
 
-  /* ── Filtered list ── */
+  /* ── Filtered list ──
+     "Abertas" = todas as conversas (tabela não tem campo status).
+     Filtro só aplica busca por nome/telefone. Grupos sempre excluídos. */
   const filtered = conversas.filter(c => {
     if (isGroupPhone(c.telefone)) return false
-    if (filter === 'abertas') {
-      const last = c.historico?.[c.historico.length - 1]
-      if (!last || last.role !== 'user') return false
-    }
     if (!search) return true
     const nome = resolverNome(c, contatos[c.telefone])
     return nome.toLowerCase().includes(search.toLowerCase()) || c.telefone.includes(search)
@@ -364,7 +394,7 @@ export default function InboxPage() {
                 <span>Filtro</span>
               </button>
               <span className="text-[11px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full font-medium">
-                Total: {filtered.length}
+                Total: {totalCount}
               </span>
             </div>
             <button className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-400 hover:text-gray-600 transition-colors">
@@ -457,13 +487,13 @@ export default function InboxPage() {
             )
           })}
 
-          {hasMore && (
-            <button
-              onClick={() => loadConversas(page + 1)}
-              className="w-full py-3 text-xs text-primary hover:bg-gray-50 transition-colors text-center font-medium"
-            >
-              Carregar mais
-            </button>
+          {/* Infinite-scroll sentinel */}
+          <div ref={sentinelRef} className="h-1" />
+          {loadingMore && (
+            <div className="flex items-center justify-center py-3 gap-2 text-gray-400">
+              <div className="w-3.5 h-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <span className="text-xs">Carregando…</span>
+            </div>
           )}
         </div>
       </div>
