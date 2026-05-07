@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Search, Plus, X, Send, Paperclip, MessageSquare,
-  Check, CheckCheck, SlidersHorizontal, Download, Upload,
+  Check, CheckCheck, SlidersHorizontal, Download, Upload, RefreshCw,
 } from 'lucide-react'
 import { isPast, isToday, parseISO } from 'date-fns'
 import { supabase } from '@/lib/supabase'
@@ -605,11 +605,37 @@ function NovoContatoModal({ etapas, onClose, onCreated }: NovoContatoProps) {
 /* ──────────────────────────────────────────
    MAIN PAGE
 ────────────────────────────────────────── */
+type SortBy = 'atualizado_em' | 'nome' | 'criado_em'
+
+type ConversaPreview = { lastMsg: string; lastMsgTime: string }
+
+function getMsgPreview(hist: Mensagem[]): string {
+  const last = hist[hist.length - 1]
+  if (!last) return ''
+  let txt = last.content ?? ''
+  txt = txt.replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '')
+  if (!txt) {
+    if (last.media_type === 'audio' || last.media_type === 'ptt') return '🎤 Áudio'
+    if (last.media_type === 'image') return '🖼️ Imagem'
+    if (last.media_type === 'document') return '📄 Documento'
+  }
+  return txt.slice(0, 90)
+}
+
+function getDisplayName(c: Contato): string {
+  if (c.nome && c.nome.trim() && c.nome !== c.telefone) return c.nome.trim()
+  return formatPhone(c.telefone)
+}
+
 export default function ContatosPage() {
   const [contatos, setContatos] = useState<Contato[]>([])
   const [etapas, setEtapas] = useState<EtapaFunil[]>([])
   const [total, setTotal] = useState(0)
   const [pg, setPg] = useState(0)
+  const [sortBy, setSortBy] = useState<SortBy>('atualizado_em')
+  const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [previews, setPreviews] = useState<Record<string, ConversaPreview>>({})
 
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
@@ -624,25 +650,79 @@ export default function ContatosPage() {
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const filtersRef = useRef<HTMLDivElement>(null)
 
-  const load = useCallback(async (q: string, sStatus: string, sEtapa: string, sOrigem: string, page: number) => {
-    let query = supabase.from('crm_contatos').select('*', { count: 'exact' })
-      .order('criado_em', { ascending: false })
-    if (q) query = query.or(`nome.ilike.%${q}%,telefone.ilike.%${q}%,email.ilike.%${q}%`)
-    if (sStatus) query = query.eq('status', sStatus)
-    if (sEtapa) query = query.eq('etapa_funil_id', sEtapa)
-    if (sOrigem) query = query.eq('origem', sOrigem)
-    const { data, count } = await query.range(page * PAGE, page * PAGE + PAGE - 1)
-    if (data) { setContatos(data as Contato[]); setTotal(count ?? 0); setPg(page) }
+  const load = useCallback(async (
+    q: string, sStatus: string, sEtapa: string, sOrigem: string,
+    page: number, sort: SortBy, silent = false,
+  ) => {
+    if (!silent) setLoading(true)
+
+    // ── 1. Count (separate HEAD query) ──────────────────────────
+    let cntQ = supabase.from('crm_contatos').select('*', { count: 'exact', head: true })
+    if (q) cntQ = cntQ.or(`nome.ilike.%${q}%,telefone.ilike.%${q}%,email.ilike.%${q}%`)
+    if (sStatus) cntQ = cntQ.eq('status', sStatus)
+    if (sEtapa) cntQ = cntQ.eq('etapa_funil_id', sEtapa)
+    if (sOrigem) cntQ = cntQ.eq('origem', sOrigem)
+
+    // ── 2. Data query with pagination ────────────────────────────
+    let dtQ = supabase.from('crm_contatos').select('*')
+    if (q) dtQ = dtQ.or(`nome.ilike.%${q}%,telefone.ilike.%${q}%,email.ilike.%${q}%`)
+    if (sStatus) dtQ = dtQ.eq('status', sStatus)
+    if (sEtapa) dtQ = dtQ.eq('etapa_funil_id', sEtapa)
+    if (sOrigem) dtQ = dtQ.eq('origem', sOrigem)
+    if (sort === 'nome') dtQ = dtQ.order('nome', { ascending: true, nullsFirst: false })
+    else if (sort === 'criado_em') dtQ = dtQ.order('criado_em', { ascending: true })
+    else dtQ = dtQ.order('atualizado_em', { ascending: false })
+    dtQ = dtQ.range(page * PAGE, page * PAGE + PAGE - 1)
+
+    const [{ count }, { data }] = await Promise.all([cntQ, dtQ])
+    const contacts = (data ?? []) as Contato[]
+    setContatos(contacts)
+    setTotal(count ?? 0)
+    setPg(page)
+
+    // ── 3. Conversation previews (batch fetch) ────────────────────
+    if (contacts.length > 0) {
+      const phones = contacts.map(c => c.telefone)
+      const { data: convs } = await supabase
+        .from('conversas')
+        .select('telefone, historico, atualizado_em')
+        .in('telefone', phones)
+      if (convs) {
+        const map: Record<string, ConversaPreview> = {}
+        convs.forEach(conv => {
+          const preview = getMsgPreview((conv.historico ?? []) as Mensagem[])
+          if (preview) map[conv.telefone] = { lastMsg: preview, lastMsgTime: conv.atualizado_em }
+        })
+        setPreviews(map)
+      }
+    }
+
+    if (!silent) setLoading(false)
+  }, [])
+
+  // ── Realtime subscription ──────────────────────────────────────
+  useEffect(() => {
+    const ch = supabase.channel('contatos-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'crm_contatos' }, payload => {
+        const novo = payload.new as Contato
+        setContatos(prev => [novo, ...prev])
+        setTotal(t => t + 1)
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'crm_contatos' }, payload => {
+        const updated = payload.new as Contato
+        setContatos(prev => prev.map(c => c.id === updated.id ? updated : c))
+        setPanelContato(prev => prev?.id === updated.id ? updated : prev)
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(ch) }
   }, [])
 
   useEffect(() => {
-    load('', '', '', '', 0)
-    supabase.from('etapas_funil').select('*').order('ordem').then(({ data }) => {
-      if (data) setEtapas(data as EtapaFunil[])
-    })
+    load('', '', '', '', 0, 'atualizado_em')
+    supabase.from('etapas_funil').select('*').order('ordem')
+      .then(({ data }) => { if (data) setEtapas(data as EtapaFunil[]) })
   }, [load])
 
-  /* close filter dropdown on outside click */
   useEffect(() => {
     function h(e: MouseEvent) {
       if (filtersRef.current && !filtersRef.current.contains(e.target as Node)) setShowFilters(false)
@@ -654,7 +734,7 @@ export default function ContatosPage() {
   function handleSearch(val: string) {
     setSearch(val)
     if (searchTimer.current) clearTimeout(searchTimer.current)
-    searchTimer.current = setTimeout(() => load(val, filterStatus, filterEtapa, filterOrigem, 0), 300)
+    searchTimer.current = setTimeout(() => load(val, filterStatus, filterEtapa, filterOrigem, 0, sortBy), 300)
   }
 
   function applyFilter(key: 'status' | 'etapa' | 'origem', val: string) {
@@ -664,19 +744,32 @@ export default function ContatosPage() {
     if (key === 'status') setFilterStatus(val)
     if (key === 'etapa') setFilterEtapa(val)
     if (key === 'origem') setFilterOrigem(val)
-    load(search, ns, ne, no, 0)
+    load(search, ns, ne, no, 0, sortBy)
   }
 
   function clearFilters() {
     setFilterStatus(''); setFilterEtapa(''); setFilterOrigem('')
-    load(search, '', '', '', 0)
+    load(search, '', '', '', 0, sortBy)
+  }
+
+  function handleSort(s: SortBy) {
+    setSortBy(s)
+    load(search, filterStatus, filterEtapa, filterOrigem, 0, s)
+  }
+
+  async function handleRefresh() {
+    setRefreshing(true)
+    await load(search, filterStatus, filterEtapa, filterOrigem, pg, sortBy, true)
+    setRefreshing(false)
   }
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   }
   function toggleSelectAll() {
-    setSelectedIds(prev => prev.size === contatos.length ? new Set() : new Set(contatos.map(c => c.id)))
+    setSelectedIds(prev =>
+      prev.size === contatos.length ? new Set() : new Set(contatos.map(c => c.id))
+    )
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE))
@@ -687,6 +780,7 @@ export default function ContatosPage() {
       <div className="px-5 py-3 border-b border-gray-200 bg-white flex items-center gap-3 flex-shrink-0">
         <span className="text-sm font-bold text-gray-800 tracking-widest uppercase flex-shrink-0">Contatos</span>
 
+        {/* Search */}
         <div className="relative flex-1 max-w-sm">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
           <input value={search} onChange={e => handleSearch(e.target.value)}
@@ -744,9 +838,23 @@ export default function ContatosPage() {
           )}
         </div>
 
+        {/* Sort */}
+        <select value={sortBy} onChange={e => handleSort(e.target.value as SortBy)}
+          className="text-xs border border-gray-200 rounded-xl px-3 py-2 focus:outline-none bg-white text-gray-600 font-medium flex-shrink-0">
+          <option value="atualizado_em">Mais recentes</option>
+          <option value="nome">Nome A–Z</option>
+          <option value="criado_em">Mais antigas</option>
+        </select>
+
         <span className="text-xs text-gray-400 flex-shrink-0">{total} contatos</span>
 
         <div className="flex items-center gap-2 ml-auto">
+          {/* Refresh */}
+          <button onClick={handleRefresh} disabled={refreshing}
+            title="Atualizar lista"
+            className="p-2 border border-gray-200 rounded-xl text-gray-500 hover:bg-gray-50 hover:text-primary transition-colors disabled:opacity-50">
+            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+          </button>
           <button className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-xl text-xs font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
             <Upload size={12} /> Importar
           </button>
@@ -766,9 +874,7 @@ export default function ContatosPage() {
           <span className="text-sm font-semibold text-blue-700">
             {selectedIds.size} selecionado{selectedIds.size > 1 ? 's' : ''}
           </span>
-          <button className="text-xs text-blue-600 hover:text-blue-800 font-semibold">
-            Mudar etapa
-          </button>
+          <button className="text-xs text-blue-600 hover:text-blue-800 font-semibold">Mudar etapa</button>
           <button onClick={() => setSelectedIds(new Set())} className="ml-auto text-blue-400 hover:text-blue-600">
             <X size={14} />
           </button>
@@ -778,108 +884,143 @@ export default function ContatosPage() {
       {/* ── Table ── */}
       <div className="flex-1 overflow-y-auto p-5">
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100 bg-gray-50/80">
-                <th className="px-4 py-3 w-10">
-                  <input type="checkbox"
-                    checked={selectedIds.size === contatos.length && contatos.length > 0}
-                    onChange={toggleSelectAll}
-                    className="rounded border-gray-300 text-primary focus:ring-primary" />
-                </th>
-                {['Nome', 'Telefone', 'Email', 'Etapa', 'Status', 'Origem', 'Data', 'Ações'].map(h => (
-                  <th key={h} className="text-left px-3 py-3 text-[10px] font-bold text-gray-400 uppercase tracking-wide">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {contatos.map(c => {
-                const etapa = etapas.find(e => e.id === c.etapa_funil_id)
-                return (
-                  <tr key={c.id}
-                    className={`border-b border-gray-50 hover:bg-gray-50/60 transition-colors ${
-                      panelContato?.id === c.id ? 'bg-blue-50/40' : ''
-                    }`}>
-                    <td className="px-4 py-3">
-                      <input type="checkbox" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)}
-                        onClick={e => e.stopPropagation()}
-                        className="rounded border-gray-300 text-primary focus:ring-primary" />
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="flex items-center gap-2.5">
-                        <ContactAvatar nome={c.nome} telefone={c.telefone} fotoUrl={c.foto_url} size={36} />
-                        <button onClick={() => setPanelContato(c)}
-                          className="text-sm font-semibold text-blue-600 hover:text-blue-800 hover:underline text-left truncate max-w-[140px]">
-                          {c.nome || '—'}
-                        </button>
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-sm text-gray-600 whitespace-nowrap">{formatPhone(c.telefone)}</td>
-                    <td className="px-3 py-3 text-sm text-gray-500 truncate max-w-[140px]">{c.email || '—'}</td>
-                    <td className="px-3 py-3">
-                      {etapa
-                        ? <span className="px-2 py-0.5 rounded text-[10px] font-bold text-white"
-                            style={{ backgroundColor: etapa.cor }}>
-                            {etapa.nome}
-                          </span>
-                        : <span className="text-sm text-gray-300">—</span>}
-                    </td>
-                    <td className="px-3 py-3">
-                      {c.status
-                        ? <span className="px-2 py-0.5 rounded text-[10px] font-bold text-white"
-                            style={{ backgroundColor: STATUS_COLORS[c.status] ?? '#6B7280' }}>
-                            {STATUS_LABELS[c.status] ?? c.status}
-                          </span>
-                        : <span className="text-sm text-gray-300">—</span>}
-                    </td>
-                    <td className="px-3 py-3 text-xs text-gray-500 capitalize">{c.origem || '—'}</td>
-                    <td className="px-3 py-3 text-xs text-gray-400 whitespace-nowrap">{formatDate(c.criado_em)}</td>
-                    <td className="px-3 py-3">
-                      <div className="flex items-center gap-1">
-                        <a href={`/inbox?tel=${c.telefone}`}
-                          className="p-1.5 hover:bg-blue-50 rounded-lg text-gray-400 hover:text-blue-500 transition-colors"
-                          title="Abrir chat" onClick={e => e.stopPropagation()}>
-                          <MessageSquare size={13} />
-                        </a>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-              {contatos.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="text-center py-12 text-gray-400 text-sm">Nenhum contato encontrado</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
 
-          {/* Pagination */}
-          <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between bg-gray-50/50">
-            <button disabled={pg === 0}
-              onClick={() => load(search, filterStatus, filterEtapa, filterOrigem, pg - 1)}
-              className="flex items-center gap-1 text-sm text-gray-600 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed font-medium">
-              ← Anterior
-            </button>
-            <div className="flex items-center gap-1">
-              {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
-                const page = totalPages <= 7 ? i : i === 0 ? 0 : i === 6 ? totalPages - 1 : pg <= 3 ? i : pg >= totalPages - 4 ? totalPages - 7 + i : pg - 3 + i
-                return (
-                  <button key={i} onClick={() => load(search, filterStatus, filterEtapa, filterOrigem, page)}
-                    className={`w-7 h-7 rounded-lg text-xs font-semibold transition-colors ${
-                      page === pg ? 'bg-primary text-white' : 'text-gray-500 hover:bg-gray-100'
-                    }`}>
-                    {page + 1}
-                  </button>
-                )
-              })}
+          {/* Loading state */}
+          {loading && (
+            <div className="flex items-center justify-center py-12 gap-2 text-gray-400 text-sm">
+              <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              Carregando contatos…
             </div>
-            <button disabled={(pg + 1) * PAGE >= total}
-              onClick={() => load(search, filterStatus, filterEtapa, filterOrigem, pg + 1)}
-              className="flex items-center gap-1 text-sm text-gray-600 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed font-medium">
-              Próximo →
-            </button>
-          </div>
+          )}
+
+          {!loading && (
+            <>
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-100 bg-gray-50/80">
+                    <th className="px-4 py-3 w-10">
+                      <input type="checkbox"
+                        checked={selectedIds.size === contatos.length && contatos.length > 0}
+                        onChange={toggleSelectAll}
+                        className="rounded border-gray-300 text-primary focus:ring-primary" />
+                    </th>
+                    {['Nome', 'Telefone', 'Email', 'Etapa', 'Status', 'Origem', 'Atualizado', 'Ações'].map(h => (
+                      <th key={h} className="text-left px-3 py-3 text-[10px] font-bold text-gray-400 uppercase tracking-wide">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {contatos.map(c => {
+                    const etapa = etapas.find(e => e.id === c.etapa_funil_id)
+                    const preview = previews[c.telefone]
+                    const displayName = getDisplayName(c)
+                    return (
+                      <tr key={c.id}
+                        className={`border-b border-gray-50 hover:bg-gray-50/60 transition-colors ${
+                          panelContato?.id === c.id ? 'bg-blue-50/40' : ''
+                        }`}>
+                        <td className="px-4 py-3">
+                          <input type="checkbox" checked={selectedIds.has(c.id)}
+                            onChange={() => toggleSelect(c.id)}
+                            onClick={e => e.stopPropagation()}
+                            className="rounded border-gray-300 text-primary focus:ring-primary" />
+                        </td>
+                        {/* Nome + preview */}
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-2.5">
+                            <ContactAvatar nome={c.nome} telefone={c.telefone} fotoUrl={c.foto_url} size={36} />
+                            <div className="min-w-0">
+                              <button onClick={() => setPanelContato(c)}
+                                className="text-sm font-semibold text-blue-600 hover:text-blue-800 hover:underline text-left truncate max-w-[140px] block leading-tight">
+                                {displayName}
+                              </button>
+                              {preview && (
+                                <p className="text-[10px] text-gray-400 truncate max-w-[140px] mt-0.5 leading-tight">
+                                  {preview.lastMsg}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-sm text-gray-600 whitespace-nowrap">
+                          {formatPhone(c.telefone)}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-gray-500 truncate max-w-[140px]">
+                          {c.email || '—'}
+                        </td>
+                        <td className="px-3 py-3">
+                          {etapa
+                            ? <span className="px-2 py-0.5 rounded text-[10px] font-bold text-white"
+                                style={{ backgroundColor: etapa.cor }}>{etapa.nome}</span>
+                            : <span className="text-sm text-gray-300">—</span>}
+                        </td>
+                        <td className="px-3 py-3">
+                          {c.status
+                            ? <span className="px-2 py-0.5 rounded text-[10px] font-bold text-white"
+                                style={{ backgroundColor: STATUS_COLORS[c.status] ?? '#6B7280' }}>
+                                {STATUS_LABELS[c.status] ?? c.status}
+                              </span>
+                            : <span className="text-sm text-gray-300">—</span>}
+                        </td>
+                        <td className="px-3 py-3 text-xs text-gray-500 capitalize">{c.origem || '—'}</td>
+                        <td className="px-3 py-3 text-xs text-gray-400 whitespace-nowrap">
+                          {formatDate(c.atualizado_em)}
+                        </td>
+                        <td className="px-3 py-3">
+                          <a href={`/inbox?tel=${c.telefone}`}
+                            className="p-1.5 hover:bg-blue-50 rounded-lg text-gray-400 hover:text-blue-500 transition-colors inline-flex"
+                            title="Abrir chat" onClick={e => e.stopPropagation()}>
+                            <MessageSquare size={13} />
+                          </a>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {contatos.length === 0 && (
+                    <tr>
+                      <td colSpan={9} className="text-center py-14 text-gray-400 text-sm">
+                        Nenhum contato encontrado
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+
+              {/* Pagination */}
+              <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between bg-gray-50/50">
+                <button disabled={pg === 0}
+                  onClick={() => load(search, filterStatus, filterEtapa, filterOrigem, pg - 1, sortBy)}
+                  className="flex items-center gap-1 text-sm text-gray-600 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed font-medium">
+                  ← Anterior
+                </button>
+                <div className="flex items-center gap-1">
+                  {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                    const page = totalPages <= 7 ? i
+                      : i === 0 ? 0 : i === 6 ? totalPages - 1
+                      : pg <= 3 ? i
+                      : pg >= totalPages - 4 ? totalPages - 7 + i
+                      : pg - 3 + i
+                    return (
+                      <button key={i}
+                        onClick={() => load(search, filterStatus, filterEtapa, filterOrigem, page, sortBy)}
+                        className={`w-7 h-7 rounded-lg text-xs font-semibold transition-colors ${
+                          page === pg ? 'bg-primary text-white' : 'text-gray-500 hover:bg-gray-100'
+                        }`}>
+                        {page + 1}
+                      </button>
+                    )
+                  })}
+                </div>
+                <button disabled={(pg + 1) * PAGE >= total}
+                  onClick={() => load(search, filterStatus, filterEtapa, filterOrigem, pg + 1, sortBy)}
+                  className="flex items-center gap-1 text-sm text-gray-600 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed font-medium">
+                  Próximo →
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
