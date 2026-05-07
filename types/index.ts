@@ -44,7 +44,7 @@ export interface Tarefa {
   contato_id: string | null
   titulo: string
   descricao: string | null
-  status: 'pendente' | 'concluida'
+  status: 'pendente' | 'concluida' | 'em_andamento'
   vencimento: string | null
   criado_em: string
 }
