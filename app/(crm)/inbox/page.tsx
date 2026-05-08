@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { sendText, sendAudio, sendImage } from '@/lib/evolution'
-import { formatPhone, formatDate, getDateLabel, isGroupPhone } from '@/lib/utils'
+import { formatPhone, formatDate, getDateLabel, isGroupPhone, nomeValido, parseMsgPreview } from '@/lib/utils'
 import { useUnread } from '@/lib/unread-context'
 import ContactAvatar from '@/components/ContactAvatar'
 import AudioRecorder from '@/components/AudioRecorder'
@@ -17,12 +17,8 @@ import type { Conversa, Contato, EtapaFunil, Mensagem, Tarefa } from '@/types'
 /* ─────────────── helpers ─────────────── */
 function getPreview(msg: Mensagem | undefined): string {
   if (!msg) return '—'
-  if (msg.media_type === 'image') return '🖼️ Imagem'
-  if (msg.media_type === 'audio' || msg.media_type === 'ptt') return '🎵 Áudio'
-  if (msg.media_type === 'document') return '📄 Documento'
   const prefix = msg.role === 'assistant' ? '✓ ' : ''
-  const raw = msg.content?.replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '') || '—'
-  return (prefix + raw).slice(0, 45)
+  return parseMsgPreview(msg, prefix).slice(0, 45)
 }
 
 function getMediaMsgId(msg: Mensagem): string | undefined {
@@ -44,8 +40,8 @@ function isImageMsg(msg: Mensagem): boolean {
 }
 
 function resolverNome(conv: Conversa, contato?: Contato | null): string {
-  if (contato?.nome?.trim()) return contato.nome.trim()
-  if (conv.nome?.trim()) return conv.nome.trim()
+  if (nomeValido(contato?.nome, conv.telefone)) return contato!.nome!.trim()
+  if (nomeValido(conv.nome, conv.telefone)) return conv.nome!.trim()
   return formatPhone(conv.telefone)
 }
 
@@ -367,7 +363,10 @@ export default function InboxPage() {
     if (msg.media_type === 'document' || msg.content?.startsWith('[document')) {
       return <div className="flex items-center gap-2 text-sm">📄 <span>Documento</span></div>
     }
-    const txt = msg.content?.replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '') || ''
+    let txt = (msg.content ?? '').replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '').trim()
+    if (!txt || /^\[(?:text|undefined)\]$/.test(txt)) {
+      return <span className="text-sm leading-relaxed italic text-gray-400">Mensagem</span>
+    }
     return <span className="text-sm leading-relaxed whitespace-pre-wrap break-words">{txt}</span>
   }
 

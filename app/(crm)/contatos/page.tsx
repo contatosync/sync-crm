@@ -7,7 +7,7 @@ import {
 import { isPast, isToday, parseISO } from 'date-fns'
 import { supabase } from '@/lib/supabase'
 import { sendText, sendAudio, sendImage } from '@/lib/evolution'
-import { formatPhone, formatDate, getDateLabel } from '@/lib/utils'
+import { formatPhone, formatDate, getDateLabel, nomeValido, parseMsgPreview } from '@/lib/utils'
 import ContactAvatar from '@/components/ContactAvatar'
 import AudioRecorder from '@/components/AudioRecorder'
 import AudioPlayer from '@/components/AudioPlayer'
@@ -87,6 +87,7 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
 
   const fileRef = useRef<HTMLInputElement>(null)
   const msgsEndRef = useRef<HTMLDivElement>(null)
+  const textAreaRef = useRef<HTMLTextAreaElement>(null)
 
   /* load conv + realtime */
   useEffect(() => {
@@ -200,7 +201,7 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
             <ContactAvatar nome={contato.nome} telefone={contato.telefone}
               fotoUrl={contato.foto_url} size={64} />
             <div className="flex-1 min-w-0">
-              <h2 className="text-lg font-bold text-gray-900 truncate">{contato.nome || formatPhone(contato.telefone)}</h2>
+              <h2 className="text-lg font-bold text-gray-900 truncate">{nomeValido(contato.nome, contato.telefone) ? contato.nome! : formatPhone(contato.telefone)}</h2>
               <a href={`tel:+${contato.telefone.replace(/\D/g, '')}`}
                 className="text-sm text-primary hover:underline">{formatPhone(contato.telefone)}</a>
               <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
@@ -282,9 +283,12 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
                               ? <ImageMessage messageId={msgId} telefone={contato.telefone} fromMe={isOwn} />
                               : msg.media_type === 'document'
                                 ? <span className="text-sm">📄 Documento</span>
-                                : <span className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                                    {msg.content?.replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '')}
-                                  </span>
+                                : (() => {
+                                    const t = (msg.content ?? '').replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '').trim()
+                                    return (!t || /^\[(?:text|undefined)\]$/.test(t))
+                                      ? <span className="text-sm leading-relaxed italic text-gray-400">Mensagem</span>
+                                      : <span className="text-sm leading-relaxed whitespace-pre-wrap break-words">{t}</span>
+                                  })()
                           }
                           <div className={`flex items-center gap-1 mt-0.5 ${isOwn ? 'justify-end' : ''}`}>
                             <span className="text-[10px] text-gray-400">
@@ -301,7 +305,18 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
                 </div>
               ))}
               {!localConv?.historico?.length && (
-                <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Sem histórico</div>
+                <div className="flex flex-col items-center justify-center h-full py-10 gap-3 text-center px-6">
+                  <MessageSquare size={48} className="text-gray-300" />
+                  <p className="text-sm font-semibold text-gray-500">Nenhuma conversa ainda</p>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    Este contato ainda não iniciou uma conversa pelo WhatsApp
+                  </p>
+                  <button
+                    onClick={() => textAreaRef.current?.focus()}
+                    className="mt-1 px-4 py-2 bg-primary text-white text-xs font-semibold rounded-xl hover:bg-primary/90 transition-colors">
+                    + Iniciar conversa
+                  </button>
+                </div>
               )}
               <div ref={msgsEndRef} />
             </div>
@@ -322,7 +337,7 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
                   className="p-2 text-gray-400 hover:text-primary rounded-lg hover:bg-gray-100 transition-colors">
                   <Paperclip size={16} />
                 </button>
-                <textarea value={text} onChange={e => setText(e.target.value)}
+                <textarea ref={textAreaRef} value={text} onChange={e => setText(e.target.value)}
                   placeholder="Escreva uma mensagem..." disabled={isRecording || sending}
                   rows={1} className="flex-1 bg-gray-100 rounded-xl px-3 py-2 text-sm focus:outline-none resize-none"
                   style={{ maxHeight: 80 }}
@@ -612,18 +627,12 @@ type ConversaPreview = { lastMsg: string; lastMsgTime: string }
 function getMsgPreview(hist: Mensagem[]): string {
   const last = hist[hist.length - 1]
   if (!last) return ''
-  let txt = last.content ?? ''
-  txt = txt.replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '')
-  if (!txt) {
-    if (last.media_type === 'audio' || last.media_type === 'ptt') return '🎤 Áudio'
-    if (last.media_type === 'image') return '🖼️ Imagem'
-    if (last.media_type === 'document') return '📄 Documento'
-  }
-  return txt.slice(0, 90)
+  const preview = parseMsgPreview(last)
+  return preview === '—' ? '' : preview.slice(0, 90)
 }
 
 function getDisplayName(c: Contato): string {
-  if (c.nome && c.nome.trim() && c.nome !== c.telefone) return c.nome.trim()
+  if (nomeValido(c.nome, c.telefone)) return c.nome!.trim()
   return formatPhone(c.telefone)
 }
 
@@ -675,7 +684,7 @@ export default function ContatosPage() {
     dtQ = dtQ.range(page * PAGE, page * PAGE + PAGE - 1)
 
     const [{ count }, { data }] = await Promise.all([cntQ, dtQ])
-    const contacts = (data ?? []) as Contato[]
+    const contacts = ((data ?? []) as Contato[]).filter(c => c.telefone && c.telefone.length <= 15)
     setContatos(contacts)
     setTotal(count ?? 0)
     setPg(page)

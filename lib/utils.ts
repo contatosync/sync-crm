@@ -49,3 +49,32 @@ export function getDateLabel(ts: string): string {
 export function isGroupPhone(tel: string): boolean {
   return tel.replace(/\D/g, '').startsWith('120363')
 }
+
+/* ─── Nome filtering ─── */
+const NOMES_IGNORADOS = ['sync', 'sincronizar', 'contatosync']
+
+export function nomeValido(nome: string | null | undefined, telefone: string): boolean {
+  if (!nome?.trim()) return false
+  const n = nome.toLowerCase().trim()
+  if (NOMES_IGNORADOS.some(x => n.includes(x))) return false
+  if (nome.trim() === telefone) return false
+  return true
+}
+
+/* ─── Message content parsing ─── */
+const BARE_BRACKETS = /^\[(?:text|undefined)\]$/
+
+export function parseMsgPreview(msg: { content?: string; media_type?: string } | undefined, prefix = ''): string {
+  if (!msg) return '—'
+  if (msg.media_type === 'image') return prefix + '🖼️ Imagem'
+  if (msg.media_type === 'audio' || msg.media_type === 'ptt') return prefix + '🎵 Áudio'
+  if (msg.media_type === 'document') return prefix + '📄 Documento'
+  let txt = (msg.content ?? '').replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '').trim()
+  if (!txt || BARE_BRACKETS.test(txt)) {
+    if (msg.content?.startsWith('[audio') || msg.content?.startsWith('[ptt')) return prefix + '🎵 Áudio'
+    if (msg.content?.startsWith('[image')) return prefix + '🖼️ Imagem'
+    if (msg.content?.startsWith('[document')) return prefix + '📄 Documento'
+    return prefix + '💬 Mensagem'
+  }
+  return prefix + txt
+}

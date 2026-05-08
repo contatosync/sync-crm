@@ -9,12 +9,12 @@ import type { DragEndEvent } from '@dnd-kit/core'
 import {
   X, Plus, Send, Paperclip, LayoutGrid, List as ListIcon,
   Search, MoreHorizontal, Zap, Check, CheckCheck,
-  ChevronLeft, ChevronRight, ExternalLink,
+  ChevronLeft, ChevronRight, ExternalLink, MessageSquare,
 } from 'lucide-react'
 import { isPast, isToday, parseISO } from 'date-fns'
 import { supabase } from '@/lib/supabase'
 import { sendText, sendAudio, sendImage } from '@/lib/evolution'
-import { formatPhone, formatDate, getDateLabel } from '@/lib/utils'
+import { formatPhone, formatDate, getDateLabel, nomeValido, parseMsgPreview } from '@/lib/utils'
 import ContactAvatar from '@/components/ContactAvatar'
 import AudioRecorder from '@/components/AudioRecorder'
 import AudioPlayer from '@/components/AudioPlayer'
@@ -49,11 +49,7 @@ function isImageMsg(msg: Mensagem) {
   return msg.media_type === 'image' || !!(msg.content?.startsWith('[image'))
 }
 function getMsgPreview(msg: Mensagem | undefined): string {
-  if (!msg) return '—'
-  if (msg.media_type === 'image') return '🖼️ Imagem'
-  if (msg.media_type === 'audio' || msg.media_type === 'ptt') return '🎵 Áudio'
-  if (msg.media_type === 'document') return '📄 Documento'
-  return (msg.content?.replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '') ?? '—').slice(0, 40)
+  return parseMsgPreview(msg).slice(0, 40)
 }
 
 /* ─────────── Card body (shared) ─────────── */
@@ -68,7 +64,7 @@ function CardBody({ contato, conv, tasks }: CardProps) {
     <>
       <div className="flex items-start justify-between gap-2 mb-1">
         <p className="text-sm font-bold text-blue-600 truncate leading-snug">
-          {contato.nome || formatPhone(contato.telefone)}
+          {nomeValido(contato.nome, contato.telefone) ? contato.nome! : formatPhone(contato.telefone)}
         </p>
         <span className="w-2 h-2 rounded-full flex-shrink-0 mt-1.5" style={{ backgroundColor: dot }} />
       </div>
@@ -93,7 +89,10 @@ function CardBody({ contato, conv, tasks }: CardProps) {
         </div>
       )}
 
-      <p className="text-[11px] text-gray-400 truncate">{getMsgPreview(lastMsg)}</p>
+      {getMsgPreview(lastMsg) === '—'
+        ? <p className="text-[11px] text-gray-300 italic truncate">—</p>
+        : <p className="text-[11px] text-gray-400 truncate">{getMsgPreview(lastMsg)}</p>
+      }
       {conv && <p className="text-[10px] text-gray-300 text-right mt-1.5">{formatDate(conv.atualizado_em)}</p>}
     </>
   )
@@ -168,6 +167,7 @@ function ContactPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
 
   const fileRef = useRef<HTMLInputElement>(null)
   const msgsEndRef = useRef<HTMLDivElement>(null)
+  const textAreaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     supabase.from('conversas').select('*').eq('telefone', contato.telefone).maybeSingle()
@@ -257,7 +257,7 @@ function ContactPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
         <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3 flex-shrink-0">
           <ContactAvatar nome={contato.nome} telefone={contato.telefone} fotoUrl={contato.foto_url} size={44} />
           <div className="flex-1 min-w-0">
-            <p className="font-semibold text-gray-900 truncate">{contato.nome || formatPhone(contato.telefone)}</p>
+            <p className="font-semibold text-gray-900 truncate">{nomeValido(contato.nome, contato.telefone) ? contato.nome! : formatPhone(contato.telefone)}</p>
             <p className="text-xs text-gray-400">{formatPhone(contato.telefone)}</p>
           </div>
           <a href={`https://wa.me/${contato.telefone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer"
@@ -318,9 +318,12 @@ function ContactPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
                               ? <ImageMessage messageId={msgId} telefone={contato.telefone} fromMe={isOwn} />
                               : msg.media_type === 'document'
                                 ? <span className="text-sm">📄 Documento</span>
-                                : <span className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                                    {msg.content?.replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '')}
-                                  </span>
+                                : (() => {
+                                    const t = (msg.content ?? '').replace(/^\[(?:audio|ptt|image|document):[^\]]+\]\s*/, '').trim()
+                                    return (!t || /^\[(?:text|undefined)\]$/.test(t))
+                                      ? <span className="text-sm leading-relaxed italic text-gray-400">Mensagem</span>
+                                      : <span className="text-sm leading-relaxed whitespace-pre-wrap break-words">{t}</span>
+                                  })()
                           }
                           <div className={`flex items-center gap-1 mt-0.5 ${isOwn ? 'justify-end' : ''}`}>
                             <span className="text-[10px] text-gray-400">
@@ -335,7 +338,18 @@ function ContactPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
                 </div>
               ))}
               {!localConv?.historico?.length && (
-                <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Nenhuma mensagem</div>
+                <div className="flex flex-col items-center justify-center h-full py-10 gap-3 text-center px-6">
+                  <MessageSquare size={48} className="text-gray-300" />
+                  <p className="text-sm font-semibold text-gray-500">Nenhuma conversa ainda</p>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    Este contato ainda não iniciou uma conversa pelo WhatsApp
+                  </p>
+                  <button
+                    onClick={() => textAreaRef.current?.focus()}
+                    className="mt-1 px-4 py-2 bg-primary text-white text-xs font-semibold rounded-xl hover:bg-primary/90 transition-colors">
+                    + Iniciar conversa
+                  </button>
+                </div>
               )}
               <div ref={msgsEndRef} />
             </div>
@@ -356,7 +370,7 @@ function ContactPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
                   className="p-2 text-gray-400 hover:text-primary rounded-lg hover:bg-gray-100 transition-colors">
                   <Paperclip size={16} />
                 </button>
-                <textarea value={text} onChange={e => setText(e.target.value)}
+                <textarea ref={textAreaRef} value={text} onChange={e => setText(e.target.value)}
                   placeholder="Mensagem..." disabled={isRecording || sending} rows={1}
                   className="flex-1 bg-gray-100 rounded-xl px-3 py-2 text-sm focus:outline-none resize-none"
                   style={{ maxHeight: 80 }}
@@ -654,7 +668,7 @@ function PipelineContent() {
       supabase.from('etapas_funil').select('*').order('ordem'),
       supabase.from('tarefas').select('*').eq('status', 'pendente').range(0, 999),
     ])
-    if (c) setContatos(c as Contato[])
+    if (c) setContatos((c as Contato[]).filter(x => x.telefone && x.telefone.length <= 15))
     if (conv) {
       const map: Record<string, Conversa> = {}
       ;(conv as Conversa[]).forEach(x => { map[x.telefone] = x })
@@ -918,7 +932,7 @@ function PipelineContent() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <ContactAvatar nome={c.nome} telefone={c.telefone} fotoUrl={c.foto_url} size={28} />
-                          <span className="text-sm text-gray-800">{c.nome || formatPhone(c.telefone)}</span>
+                          <span className="text-sm text-gray-800">{nomeValido(c.nome, c.telefone) ? c.nome! : formatPhone(c.telefone)}</span>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-600">{emp}</td>
