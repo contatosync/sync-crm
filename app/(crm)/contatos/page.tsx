@@ -44,10 +44,10 @@ const PAGE = 50
 ────────────────────────────────────────── */
 interface PanelProps {
   contato: Contato; etapas: EtapaFunil[]
-  onClose: () => void; onUpdate: (c: Contato) => void
+  onClose: () => void; onUpdate: (c: Contato) => void; onDelete: (id: string) => void
 }
 
-function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
+function ContatoPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelProps) {
   const [tab, setTab] = useState<'conversa' | 'detalhes' | 'tarefas' | 'notas'>('conversa')
   const [localConv, setLocalConv] = useState<Conversa | null>(null)
 
@@ -69,10 +69,12 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
   const [origem, setOrigem] = useState(contato.origem ?? '')
   const [status, setStatus] = useState(contato.status ?? '')
   const [etapaId, setEtapaId] = useState(contato.etapa_funil_id ?? '')
+  const [localEtapaId, setLocalEtapaId] = useState(contato.etapa_funil_id ?? '')
   const [valor, setValor] = useState(
     String((contato.campos_custom as Record<string, unknown>)?.valor ?? ''))
   const [obs, setObs] = useState(contato.observacoes ?? '')
   const [saving, setSaving] = useState(false)
+  const [saveMsg, setSaveMsg] = useState('')
 
   /* tarefas */
   const [tarefas, setTarefas] = useState<Tarefa[]>([])
@@ -113,11 +115,26 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault()
-    if (!text.trim() && !pendingImage) return
+    const msgText = text.trim()
+    if (!msgText && !pendingImage) return
     setSending(true)
     try {
       if (pendingImage) { await sendImage(contato.telefone, pendingImage); setPendingImage(null) }
-      if (text.trim()) { await sendText(contato.telefone, text.trim()); setText('') }
+      if (msgText) {
+        await sendText(contato.telefone, msgText)
+        setText('')
+        const newMsg: Mensagem = { role: 'assistant', content: msgText, timestamp: new Date().toISOString() }
+        const novoHist = [...((localConv?.historico ?? []) as Mensagem[]), newMsg]
+        const now = new Date().toISOString()
+        await supabase.from('conversas').upsert(
+          { telefone: contato.telefone, nome: contato.nome ?? null, historico: novoHist, atualizado_em: now },
+          { onConflict: 'telefone' }
+        )
+        setLocalConv(prev => prev
+          ? { ...prev, historico: novoHist, atualizado_em: now }
+          : { id: '', telefone: contato.telefone, nome: contato.nome ?? null, historico: novoHist, atualizado_em: now }
+        )
+      }
     } catch { /* noop */ }
     setSending(false)
   }
@@ -134,16 +151,40 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
   }
 
   async function saveDetails() {
-    setSaving(true)
+    setSaving(true); setSaveMsg('')
     const campos = {
       ...(contato.campos_custom as Record<string, unknown> ?? {}),
       empresa, posicao: cargo, valor: Number(valor) || 0,
     }
+    const { data, error } = await supabase.from('crm_contatos')
+      .update({ nome, telefone, email, origem: origem || null, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos, atualizado_em: new Date().toISOString() })
+      .eq('id', contato.id).select().single()
+    if (error) { setSaveMsg('Erro ao salvar') }
+    else if (data) { onUpdate(data as Contato); setSaveMsg('✓ Salvo!') }
+    setSaving(false)
+    setTimeout(() => setSaveMsg(''), 3000)
+  }
+
+  async function changeStatus(newStatus: string) {
     const { data } = await supabase.from('crm_contatos')
-      .update({ nome, telefone, email, origem: origem || null, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos })
+      .update({ status: newStatus, atualizado_em: new Date().toISOString() })
       .eq('id', contato.id).select().single()
     if (data) onUpdate(data as Contato)
-    setSaving(false)
+  }
+
+  async function changeEtapa(newEtapaId: string) {
+    setLocalEtapaId(newEtapaId)
+    const { data } = await supabase.from('crm_contatos')
+      .update({ etapa_funil_id: newEtapaId || null, atualizado_em: new Date().toISOString() })
+      .eq('id', contato.id).select().single()
+    if (data) { onUpdate(data as Contato); setEtapaId(newEtapaId) }
+  }
+
+  async function deleteContato() {
+    if (!window.confirm('Deletar este contato permanentemente? Esta ação não pode ser desfeita.')) return
+    await supabase.from('crm_contatos').delete().eq('id', contato.id)
+    onDelete(contato.id)
+    onClose()
   }
 
   async function saveNotas() {
@@ -205,12 +246,6 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
               <a href={`tel:+${contato.telefone.replace(/\D/g, '')}`}
                 className="text-sm text-primary hover:underline">{formatPhone(contato.telefone)}</a>
               <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                {etapaBadge && (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold text-white"
-                    style={{ backgroundColor: etapaBadge.cor }}>
-                    {etapaBadge.nome}
-                  </span>
-                )}
                 {contato.status && (
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold text-white"
                     style={{ backgroundColor: STATUS_COLORS[contato.status] ?? '#6B7280' }}>
@@ -224,21 +259,38 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
               <X size={18} />
             </button>
           </div>
+
+          {/* Etapa select */}
+          <div className="mb-2">
+            <select value={localEtapaId} onChange={e => changeEtapa(e.target.value)}
+              className="w-full text-xs border border-gray-200 rounded-xl px-3 py-1.5 focus:outline-none focus:border-primary bg-white text-gray-700 font-medium">
+              <option value="">Sem etapa no funil</option>
+              {etapas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
+            </select>
+          </div>
+
           {/* Action buttons */}
           <div className="flex gap-2">
             <a href={`/inbox?tel=${contato.telefone}`}
-              className="flex-1 flex items-center justify-center gap-1.5 py-2 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
+              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
               <MessageSquare size={13} /> Chat
             </a>
             <button onClick={() => setTab('detalhes')}
-              className="flex-1 flex items-center justify-center gap-1.5 py-2 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
+              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
               ✏️ Editar
             </button>
-            <a href={`https://wa.me/${contato.telefone.replace(/\D/g, '')}`}
-              target="_blank" rel="noopener noreferrer"
-              className="flex items-center justify-center px-3 py-2 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
-              🔗
-            </a>
+            <button onClick={() => changeStatus('qualificado')} title="Aceitar (qualificado)"
+              className="px-3 py-1.5 rounded-xl bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 transition-colors">
+              ✓
+            </button>
+            <button onClick={() => changeStatus('perdido')} title="Fechar (perdido)"
+              className="px-3 py-1.5 rounded-xl bg-gray-100 text-gray-600 text-xs font-bold hover:bg-gray-200 transition-colors">
+              ✕
+            </button>
+            <button onClick={deleteContato} title="Deletar contato"
+              className="px-3 py-1.5 rounded-xl bg-red-50 text-red-600 text-xs font-bold hover:bg-red-100 transition-colors">
+              🗑
+            </button>
           </div>
         </div>
 
@@ -415,10 +467,17 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate }: PanelProps) {
               </div>
             </div>
 
-            <button onClick={saveDetails} disabled={saving}
-              className="w-full mt-5 bg-primary text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-primary-dark disabled:opacity-60 transition-colors">
-              {saving ? 'Salvando…' : 'Salvar alterações'}
-            </button>
+            <div className="flex items-center gap-3 mt-5">
+              <button onClick={saveDetails} disabled={saving}
+                className="flex-1 bg-primary text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-primary-dark disabled:opacity-60 transition-colors">
+                {saving ? 'Salvando…' : 'Salvar alterações'}
+              </button>
+              {saveMsg && (
+                <span className={`text-xs font-semibold ${saveMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
+                  {saveMsg}
+                </span>
+              )}
+            </div>
           </div>
         )}
 
@@ -1042,6 +1101,11 @@ export default function ContatosPage() {
           onUpdate={updated => {
             setContatos(prev => prev.map(c => c.id === updated.id ? updated : c))
             setPanelContato(updated)
+          }}
+          onDelete={id => {
+            setContatos(prev => prev.filter(c => c.id !== id))
+            setTotal(t => t - 1)
+            setPanelContato(null)
           }}
         />
       )}
