@@ -91,6 +91,17 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
   const msgsEndRef = useRef<HTMLDivElement>(null)
   const textAreaRef = useRef<HTMLTextAreaElement>(null)
 
+  /* sync local display state when prop changes */
+  useEffect(() => {
+    setLocalEtapaId(contato.etapa_funil_id ?? '')
+    setEtapaId(contato.etapa_funil_id ?? '')
+    setStatus(contato.status ?? '')
+    setNome(contato.nome ?? '')
+    setEmail(contato.email ?? '')
+    setObs(contato.observacoes ?? '')
+    setNotas(contato.observacoes ?? '')
+  }, [contato.id, contato.etapa_funil_id, contato.status, contato.nome, contato.email, contato.observacoes])
+
   /* load conv + realtime */
   useEffect(() => {
     supabase.from('conversas').select('*').eq('telefone', contato.telefone).maybeSingle()
@@ -150,34 +161,44 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
     const r = new FileReader(); r.onloadend = () => setPendingImage(r.result as string); r.readAsDataURL(f)
   }
 
+  /* helper — optimistic update: UI reflects change immediately */
+  function applyUpdate(updates: Partial<Contato>) {
+    onUpdate({ ...contato, ...updates })
+  }
+
   async function saveDetails() {
     setSaving(true); setSaveMsg('')
     const campos = {
       ...(contato.campos_custom as Record<string, unknown> ?? {}),
       empresa, posicao: cargo, valor: Number(valor) || 0,
     }
-    const { data, error } = await supabase.from('crm_contatos')
+    /* optimistic — table row updates immediately */
+    applyUpdate({ nome, telefone, email, origem: origem || null, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos })
+    const { error } = await supabase.from('crm_contatos')
       .update({ nome, telefone, email, origem: origem || null, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos, atualizado_em: new Date().toISOString() })
-      .eq('id', contato.id).select().single()
-    if (error) { setSaveMsg('Erro ao salvar') }
-    else if (data) { onUpdate(data as Contato); setSaveMsg('✓ Salvo!') }
+      .eq('id', contato.id)
+    setSaveMsg(error ? 'Erro ao salvar' : '✓ Salvo!')
     setSaving(false)
-    setTimeout(() => setSaveMsg(''), 3000)
+    setTimeout(() => setSaveMsg(''), 2000)
   }
 
   async function changeStatus(newStatus: string) {
-    const { data } = await supabase.from('crm_contatos')
+    /* optimistic */
+    applyUpdate({ status: newStatus })
+    supabase.from('crm_contatos')
       .update({ status: newStatus, atualizado_em: new Date().toISOString() })
-      .eq('id', contato.id).select().single()
-    if (data) onUpdate(data as Contato)
+      .eq('id', contato.id).then(() => { /* background */ })
+    setTimeout(onClose, 600)
   }
 
   async function changeEtapa(newEtapaId: string) {
     setLocalEtapaId(newEtapaId)
-    const { data } = await supabase.from('crm_contatos')
+    setEtapaId(newEtapaId)
+    /* optimistic */
+    applyUpdate({ etapa_funil_id: newEtapaId || null })
+    supabase.from('crm_contatos')
       .update({ etapa_funil_id: newEtapaId || null, atualizado_em: new Date().toISOString() })
-      .eq('id', contato.id).select().single()
-    if (data) { onUpdate(data as Contato); setEtapaId(newEtapaId) }
+      .eq('id', contato.id).then(() => { /* background */ })
   }
 
   async function deleteContato() {
@@ -223,7 +244,7 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
     return groups
   }
 
-  const etapaBadge = etapas.find(e => e.id === contato.etapa_funil_id)
+  const etapaBadge = etapas.find(e => e.id === localEtapaId)
   const TABS = [
     { id: 'conversa', label: 'Conversa' },
     { id: 'detalhes', label: 'Detalhes' },
