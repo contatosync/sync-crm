@@ -16,6 +16,7 @@ export interface Contato {
   campos_custom: Record<string, unknown> | null
   observacoes: string | null
   foto_url: string | null
+  valor: number | null
   criado_em: string
   atualizado_em: string
   etapa?: EtapaFunil

@@ -24,11 +24,12 @@ import type { Contato, Conversa, EtapaFunil, Mensagem, Tarefa } from '@/types'
 /* ─────────── helpers ─────────── */
 const STATUS_DOT: Record<string, string> = {
   ativo: '#22C55E', qualificado: '#EAB308',
-  ganho: '#8B5CF6', perdido: '#EF4444', novo: '#3B82F6',
+  ganho: '#8B5CF6', perdido: '#EF4444', novo: '#3B82F6', fechado: '#6B7280',
 }
 
 function getValor(c: Contato): number {
-  return Number((c.campos_custom as Record<string, unknown>)?.valor ?? 0) || 0
+  // valor is now a top-level column; fall back to campos_custom for legacy rows
+  return Number(c.valor ?? (c.campos_custom as Record<string, unknown>)?.valor ?? 0) || 0
 }
 
 function fmtBRL(v: number): string {
@@ -153,7 +154,7 @@ function ContactPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
     ((contato.campos_custom as Record<string, unknown>)?.empresa as string) ?? ''
   )
   const [valor, setValor] = useState(
-    String((contato.campos_custom as Record<string, unknown>)?.valor ?? '')
+    String(contato.valor ?? (contato.campos_custom as Record<string, unknown>)?.valor ?? '')
   )
   const [status, setStatus] = useState(contato.status ?? '')
   const [etapaId, setEtapaId] = useState(contato.etapa_funil_id ?? '')
@@ -245,11 +246,22 @@ function ContactPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
 
   async function saveDetails() {
     setSaving(true); setSaveMsg('')
-    const campos = { ...(contato.campos_custom as Record<string, unknown> ?? {}), empresa, valor: Number(valor) || 0 }
+    // keep empresa in campos_custom; valor is now a top-level column
+    const campos = { ...(contato.campos_custom as Record<string, unknown> ?? {}), empresa }
+    const valorNum = Number(valor) || 0
     /* optimistic — kanban and header update immediately */
-    applyUpdate({ nome, email, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos })
+    applyUpdate({ nome, email, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos, valor: valorNum })
     const { error } = await supabase.from('crm_contatos')
-      .update({ nome, email, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos, atualizado_em: new Date().toISOString() })
+      .update({
+        nome: nome || null,
+        email: email || null,
+        status: status || 'ativo',
+        etapa_funil_id: etapaId || null,
+        observacoes: obs || null,
+        valor: valorNum,
+        campos_custom: campos,
+        atualizado_em: new Date().toISOString(),
+      })
       .eq('id', contato.id)
     setSaveMsg(error ? 'Erro ao salvar' : '✓ Salvo!')
     setSaving(false)
@@ -484,7 +496,7 @@ function ContactPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
               <select value={status} onChange={e => setStatus(e.target.value)}
                 className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-primary bg-white">
                 <option value="">—</option>
-                {['ativo', 'qualificado', 'ganho', 'perdido'].map(s => (
+                {['ativo', 'qualificado', 'ganho', 'perdido', 'fechado'].map(s => (
                   <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
                 ))}
               </select>

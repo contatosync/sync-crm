@@ -31,11 +31,11 @@ function isImageMsg(msg: Mensagem) {
 
 const STATUS_COLORS: Record<string, string> = {
   ativo: '#22C55E', qualificado: '#3B82F6',
-  ganho: '#15803D', perdido: '#EF4444', novo: '#6B7280',
+  ganho: '#15803D', perdido: '#EF4444', novo: '#6B7280', fechado: '#9CA3AF',
 }
 const STATUS_LABELS: Record<string, string> = {
   ativo: 'Ativo', qualificado: 'Qualificado',
-  ganho: 'Ganho', perdido: 'Perdido', novo: 'Novo',
+  ganho: 'Ganho', perdido: 'Perdido', novo: 'Novo', fechado: 'Fechado',
 }
 const PAGE = 50
 
@@ -71,7 +71,7 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
   const [etapaId, setEtapaId] = useState(contato.etapa_funil_id ?? '')
   const [localEtapaId, setLocalEtapaId] = useState(contato.etapa_funil_id ?? '')
   const [valor, setValor] = useState(
-    String((contato.campos_custom as Record<string, unknown>)?.valor ?? ''))
+    String(contato.valor ?? (contato.campos_custom as Record<string, unknown>)?.valor ?? ''))
   const [obs, setObs] = useState(contato.observacoes ?? '')
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
@@ -168,14 +168,25 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
 
   async function saveDetails() {
     setSaving(true); setSaveMsg('')
+    // keep empresa/posicao in campos_custom; valor is now a top-level column
     const campos = {
       ...(contato.campos_custom as Record<string, unknown> ?? {}),
-      empresa, posicao: cargo, valor: Number(valor) || 0,
+      empresa, posicao: cargo,
     }
+    const valorNum = Number(valor) || 0
     /* optimistic — table row updates immediately */
-    applyUpdate({ nome, telefone, email, origem: origem || null, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos })
+    applyUpdate({ nome, telefone, email, origem: origem || null, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos, valor: valorNum })
     const { error } = await supabase.from('crm_contatos')
-      .update({ nome, telefone, email, origem: origem || null, status, etapa_funil_id: etapaId || null, observacoes: obs, campos_custom: campos, atualizado_em: new Date().toISOString() })
+      .update({
+        nome: nome || null,
+        email: email || null,
+        status: status || 'ativo',
+        etapa_funil_id: etapaId || null,
+        observacoes: obs || null,
+        valor: valorNum,
+        campos_custom: campos,
+        atualizado_em: new Date().toISOString(),
+      })
       .eq('id', contato.id)
     setSaveMsg(error ? 'Erro ao salvar' : '✓ Salvo!')
     setSaving(false)
@@ -466,7 +477,7 @@ function ContatoPanel({ contato, etapas, onClose, onUpdate, onDelete }: PanelPro
                 <select value={status} onChange={e => setStatus(e.target.value)}
                   className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-primary bg-white">
                   <option value="">—</option>
-                  {['ativo', 'qualificado', 'ganho', 'perdido'].map(s => (
+                  {['ativo', 'qualificado', 'ganho', 'perdido', 'fechado'].map(s => (
                     <option key={s} value={s}>{STATUS_LABELS[s] ?? s}</option>
                   ))}
                 </select>
@@ -670,7 +681,7 @@ function NovoContatoModal({ etapas, onClose, onCreated }: NovoContatoProps) {
           <div className="grid grid-cols-2 gap-3">
             <select value={status} onChange={e => setStatus(e.target.value)}
               className="text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-primary bg-white">
-              {['ativo', 'qualificado', 'ganho', 'perdido'].map(s => (
+              {['ativo', 'qualificado', 'ganho', 'perdido', 'fechado'].map(s => (
                 <option key={s} value={s}>{STATUS_LABELS[s] ?? s}</option>
               ))}
             </select>
@@ -894,7 +905,7 @@ export default function ContatosPage() {
                 <select value={filterStatus} onChange={e => applyFilter('status', e.target.value)}
                   className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none bg-white">
                   <option value="">Todos</option>
-                  {['ativo', 'qualificado', 'ganho', 'perdido'].map(s => (
+                  {['ativo', 'qualificado', 'ganho', 'perdido', 'fechado'].map(s => (
                     <option key={s} value={s}>{STATUS_LABELS[s] ?? s}</option>
                   ))}
                 </select>
